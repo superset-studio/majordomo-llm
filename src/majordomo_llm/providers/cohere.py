@@ -130,6 +130,7 @@ class Cohere(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Get a plain text response from Cohere."""
         return await self._get_response(
@@ -191,6 +192,7 @@ class Cohere(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMStreamResponse:
         """Get a streaming text response from Cohere."""
         messages: list[Any] = []
@@ -244,6 +246,7 @@ class Cohere(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Cohere-specific implementation using native JSON schema response format."""
         schema = _strip_cohere_unsupported_constraints(inline_schema_refs(response_schema))

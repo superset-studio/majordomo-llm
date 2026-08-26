@@ -210,6 +210,7 @@ class OpenAICompatibleLLM(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Get a plain text response."""
         return await self._get_response(
@@ -265,6 +266,7 @@ class OpenAICompatibleLLM(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMStreamResponse:
         """Get a streaming text response."""
         state = _StreamState()
@@ -308,6 +310,7 @@ class OpenAICompatibleLLM(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Structured output via the OpenAI-compatible JSON Schema response format.
 

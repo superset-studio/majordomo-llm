@@ -1,6 +1,6 @@
 [project]
 name = "majordomo-llm"
-version = "0.21.0"
+version = "0.22.0"
 description = "Unified Python interface for multiple LLM providers with cost tracking"
 readme = "README.md"
 license = {text = "MIT"}

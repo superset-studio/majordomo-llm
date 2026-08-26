@@ -8,7 +8,7 @@ Usage:
     >>> from majordomo_llm import get_llm_instance
     >>> from majordomo_llm.logging import LoggingLLM, SqliteAdapter, FileStorageAdapter
     >>>
-    >>> llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+    >>> llm = get_llm_instance("anthropic", "claude-sonnet-5")
     >>> db = await SqliteAdapter.create("llm_logs.db")
     >>> storage = await FileStorageAdapter.create("./llm_logs")
     >>> logged_llm = LoggingLLM(llm, db, storage)

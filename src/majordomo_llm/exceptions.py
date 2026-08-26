@@ -110,3 +110,59 @@ class EmptyStructuredResponseError(ResponseParsingError):
     Subclasses :class:`ResponseParsingError`; a caller that genuinely wants to
     accept an all-null object can catch this type and read ``raw_content``.
     """
+
+
+class ResponseTruncatedError(MajordomoError):
+    """Raised when a response was cut short by the ``max_tokens`` output cap.
+
+    Providers that require an output cap (Anthropic's Messages API, Bedrock's
+    Converse API) report this as ``stop_reason == "max_tokens"``. Without this
+    error a truncated call returns successfully with partial — or, when the cut
+    lands before any text block is emitted, empty — content, which is
+    indistinguishable from a model that had nothing to say.
+
+    Deliberately inherits :class:`MajordomoError` rather than
+    :class:`ProviderError`, so that:
+
+    - :func:`~majordomo_llm.retry.is_retryable_exception` does not re-sample it.
+      Retrying a truncation spends the same budget on the same ceiling.
+    - :class:`~majordomo_llm.cascade.LLMCascade` does not fail over on it. The
+      cap is a configuration choice, not a provider outage; the next provider
+      in the chain would truncate identically.
+
+    Raise the ceiling with the ``max_tokens`` key in ``llm_config.yaml`` or the
+    per-request ``max_tokens`` argument.
+
+    Attributes:
+        max_tokens: The output cap that was hit.
+        output_tokens: Tokens the model actually emitted before being cut off.
+        partial_content: Whatever content arrived before truncation. May be an
+            empty string when the cut preceded the first text block.
+    """
+
+    def __init__(
+        self,
+        max_tokens: int,
+        output_tokens: int,
+        partial_content: str = "",
+        *,
+        provider: str | None = None,
+    ):
+        """Initialize the truncation error.
+
+        Args:
+            max_tokens: The output cap that was hit.
+            output_tokens: Tokens emitted before the cut.
+            partial_content: Content received before truncation.
+            provider: Optional provider name, included in the message.
+        """
+        where = f" from provider '{provider}'" if provider else ""
+        super().__init__(
+            f"Response{where} was truncated at the max_tokens limit of {max_tokens} "
+            f"({output_tokens} output tokens emitted). Raise it via the 'max_tokens' "
+            f"key in llm_config.yaml or the per-request max_tokens argument."
+        )
+        self.max_tokens = max_tokens
+        self.output_tokens = output_tokens
+        self.partial_content = partial_content
+        self.provider = provider

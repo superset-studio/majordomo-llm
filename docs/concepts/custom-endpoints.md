@@ -21,7 +21,7 @@ Set once at construction time, sent with every request from that instance. Use t
 
 ```python
 llm = get_llm_instance(
-    "anthropic", "claude-sonnet-4-20250514",
+    "anthropic", "claude-sonnet-5",
     base_url="https://gateway.example.com",
     default_headers={
         "X-Majordomo-Key": "mdm_key_here",

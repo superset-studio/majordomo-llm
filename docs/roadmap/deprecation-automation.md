@@ -176,7 +176,7 @@ Alias mappings in config:
 aliases:
   anthropic:
     claude-sonnet-fast: claude-haiku-4-5-20251001
-    claude-sonnet-stable: claude-sonnet-4-20250514  # Older but well-tested
+    claude-sonnet-stable: claude-sonnet-4-5-20250929  # Older but well-tested
     claude-smartest: claude-opus-4-5-20251101
   openai:
     gpt-best-value: gpt-4.1-mini

@@ -143,11 +143,72 @@ def mock_anthropic_stream_events():
     msg_delta = MagicMock()
     msg_delta.type = "message_delta"
     msg_delta.usage.output_tokens = 10
+    msg_delta.delta.stop_reason = "end_turn"
 
     async def stream():
         yield msg_start
         yield delta1
         yield delta2
+        yield msg_delta
+
+    return stream()
+
+
+@pytest.fixture
+def mock_anthropic_truncated_response():
+    """Mock Anthropic response cut off at the output cap before any text block.
+
+    Reproduces the reported failure: content joins to "" and, without a stop
+    reason on the response object, is indistinguishable from a model that had
+    nothing to say.
+    """
+    response = MagicMock()
+    response.content = []
+    response.usage.input_tokens = 25
+    response.usage.output_tokens = 1024
+    response.usage.cache_read_input_tokens = 0
+    response.usage.cache_creation_input_tokens = 0
+    response.usage.server_tool_use = None
+    response.stop_reason = "max_tokens"
+    return response
+
+
+@pytest.fixture
+def mock_anthropic_partially_truncated_response():
+    """Mock Anthropic response cut off after emitting some text."""
+    response = MagicMock()
+    response.content = [MagicMock(type="text", text="Section one is about")]
+    response.usage.input_tokens = 25
+    response.usage.output_tokens = 1024
+    response.usage.cache_read_input_tokens = 0
+    response.usage.cache_creation_input_tokens = 0
+    response.usage.server_tool_use = None
+    response.stop_reason = "max_tokens"
+    return response
+
+
+@pytest.fixture
+def mock_anthropic_truncated_stream_events():
+    """Mock Anthropic stream whose terminal event reports truncation."""
+    msg_start = MagicMock()
+    msg_start.type = "message_start"
+    msg_start.message.usage.input_tokens = 25
+    msg_start.message.usage.cache_read_input_tokens = 0
+    msg_start.message.usage.cache_creation_input_tokens = 0
+
+    delta = MagicMock()
+    delta.type = "content_block_delta"
+    delta.delta.type = "text_delta"
+    delta.delta.text = "Section one is about"
+
+    msg_delta = MagicMock()
+    msg_delta.type = "message_delta"
+    msg_delta.usage.output_tokens = 1024
+    msg_delta.delta.stop_reason = "max_tokens"
+
+    async def stream():
+        yield msg_start
+        yield delta
         yield msg_delta
 
     return stream()

@@ -4,7 +4,7 @@ This module exports all available provider classes for direct instantiation.
 
 Example:
     >>> from majordomo_llm.providers import Anthropic, Cohere, OpenAI, Gemini, DeepSeek
-    >>> llm = Anthropic(model="claude-sonnet-4-20250514", input_cost=3.0, output_cost=15.0)
+    >>> llm = Anthropic(model="claude-sonnet-5", input_cost=3.0, output_cost=15.0)
 """
 
 from majordomo_llm.providers.anthropic import Anthropic

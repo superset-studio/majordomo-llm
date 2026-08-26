@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-08-25
+
+### Added
+
+- **`max_tokens` is now configurable.** It was hardcoded at every call site that required it — 1024 for plain text and streaming, 4096/8192 for the structured paths in `providers/anthropic.py`, and 1024/4096 in `providers/bedrock.py` — with no way for a caller to raise it. It is now a per-model key in `llm_config.yaml` and a per-request keyword argument on `get_response`, `get_response_stream`, `get_json_response`, and `get_structured_json_response`. Precedence is per-request → model config → library default, resolved in one place (`LLM._resolve_max_tokens`) rather than chosen per call site
+  - Every model in the `anthropic`, `bedrock_mantle`, and `bedrock` blocks now declares its real ceiling, read from the vendor rather than a catalog (see Verification below): 128000 for Opus 5 / Fable 5 / Opus 4.8 (and its effort profiles) / Opus 4.7 / Opus 4.6 / Sonnet 5 / Sonnet 4.6, 64000 for the 4.5 line, 32000 for Opus 4 / 4.1 and Sonnet 4; on Bedrock, 262144 for `moonshotai.kimi-k2.5`, `moonshot.kimi-k2-thinking`, `nvidia.nemotron-nano-3-30b` and `nvidia.nemotron-super-3-120b`, 163840 for `deepseek.v3.2`, 131072 for `nvidia.nemotron-nano-12b-v2`, 32768 for `us.deepseek.r1-v1:0`, and 8192 for the two Llama 4 profiles
+  - Only providers whose API *requires* an output cap read the key. The twelve OpenAI-compatible providers and Gemini omit `max_tokens` entirely and inherit each model's own default, so the key is not forwarded to them rather than being silently accepted
+- **`stop_reason` on `LLMResponse` and `LLMStreamResponse`** — the provider's verbatim stop reason (`end_turn`, `tool_use`, `max_tokens`, …), or `None` for providers that report none. Also recorded in the request body written by `LoggingLLM`, so a truncated call is visible in the log row
+- **`ResponseTruncatedError`**, carrying `max_tokens`, `output_tokens`, and `partial_content`. Exported from `majordomo_llm`
+
+### Fixed
+
+- **Truncated responses no longer return silently.** `_get_response_impl` builds content by joining the response's text blocks; when the output cap was hit before any text block was emitted, the caller received `content == ""` with no exception and no warning, indistinguishable from a model that had nothing to say. Anthropic and Bedrock now raise `ResponseTruncatedError` when the provider reports `stop_reason`/`stopReason` of `max_tokens`, on the plain-text, streaming, and structured paths alike. This mirrors the existing handling of `stop_reason == "refusal"`, which already raised
+  - The error is deliberately **not** retried — re-sampling spends the same budget against the same ceiling — and deliberately does **not** trigger `LLMCascade` failover, since the next provider in the chain would truncate identically. It subclasses `MajordomoError` rather than `ProviderError` to get both behaviors without special-casing
+  - On the structured paths the check runs *before* content extraction, so a cut-off tool call reports the truncation rather than surfacing as a missing-tool or JSON parse error
+- **`_run_hooks_returning_response` no longer drops fields.** When a hook rewrote the response content, the rebuilt `LLMResponse` silently lost `routed_provider` and `routed_model`; both are now carried across, along with the new `stop_reason`
+
+### Changed
+
+- **The plain-text and streaming defaults are no longer 1024.** A model with no configured `max_tokens` now gets 16000 on non-streaming calls and 64000 on streaming ones, following Anthropic's own guidance: 16000 keeps a non-streaming response inside the SDK's HTTP timeout, while streaming has no such constraint. 1024 is roughly 700 words and, with thinking enabled, was shared between thinking and answer — the `claude-opus-4-8-medium` and `claude-opus-4-8-deep` profiles set `thinking: adaptive`, so any nontrivial answer truncated
+- The `thinking` docstring in `providers/anthropic.py` pointed at "a dedicated config entry" for raising the cap. That entry did not exist; it now does, and the docstring names it
+
+### Verification
+
+- `scripts/check_max_tokens.py` probes each configured Anthropic and Bedrock model with a deliberately over-large `max_tokens` and reads the true ceiling back out of the vendor's rejection. The request is refused before inference, so the sweep costs nothing. Credentials come from the environment or a local `.env`, matching `scripts/smoke_test_providers.py`
+- **The sweep corrected seven of the nine Bedrock ceilings.** They had been seeded from LiteLLM's public catalog, which understated every one of them — `moonshot.kimi-k2-thinking` 8192 → 262144, `nvidia.nemotron-nano-12b-v2` 8192 → 131072, `nvidia.nemotron-nano-3-30b` 8192 → 262144, `nvidia.nemotron-super-3-120b` 32768 → 262144, both Llama 4 profiles 4096 → 8192, and `us.deepseek.r1-v1:0` 4096 → 32768. All 13 reachable Anthropic models and all 4 Bedrock Mantle models confirmed as configured
+
+### Removed
+
+- **The Claude 4 family is retired.** `claude-opus-4-1-20250805`, `claude-opus-4-20250514`, and `claude-sonnet-4-20250514` return HTTP 404 (`not_found_error`) from the Messages API — surfaced by the `max_tokens` sweep, which could not probe them. All three are removed from the `anthropic` models block and mapped in `deprecated_models` to the current flagship of the same tier: the two Opus entries to `claude-opus-5` and Sonnet 4 to `claude-sonnet-5`. Existing callers keep working and get the standard deprecation warning; the Opus mapping also cuts cost from $15/$75 to $5/$25
+  - Removal is what activates the mapping — `get_llm_instance()` only consults `deprecated_models` when a model is absent from the registry
+  - The shipped `resilient-sonnet` alias targeted `claude-sonnet-4-20250514`. Alias validation resolves against the models block only, not `deprecated_models`, so leaving it would have raised `ConfigurationError` at import and broken the package outright. It now targets `claude-sonnet-5`, and a test guards against any alias naming a retired model
+  - `claude-sonnet-4-20250514` was the canonical example throughout the docstrings, README, and docs; those 87 references now name live models. Note this was invisible to the test suite, which mocks every provider SDK client and so never validates that a registered model exists upstream
+
 ## [0.21.0] - 2026-08-20
 
 ### Added

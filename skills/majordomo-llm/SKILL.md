@@ -67,8 +67,9 @@ get_supported_models("openai")     # ["gpt-5", "gpt-5-mini", "gpt-4.1", "o3", "o
 response = await llm.get_response(
     user_prompt="Summarize this article: ...",
     system_prompt="You are a concise summarizer.",  # optional
-    temperature=0.3,   # default 0.3
-    top_p=1.0,         # default 1.0
+    temperature=0.3,      # optional — unset by default, not sent unless passed
+    top_p=1.0,            # optional — unset by default, not sent unless passed
+    max_tokens=32000,     # optional — overrides the model's configured cap
 )
 
 response.content        # str — the LLM's reply
@@ -80,6 +81,27 @@ response.output_cost    # float USD
 response.total_cost     # float USD
 response.response_time  # float seconds
 response.deprecation_warning  # str | None — set if model was auto-replaced
+response.stop_reason    # str | None — "end_turn", "tool_use", "max_tokens", ...
+```
+
+### Output cap (`max_tokens`)
+
+Anthropic and Bedrock require an output cap on every request; the other providers
+send none and inherit the model default. The cap resolves per-request → model config
+(`llm_config.yaml`) → library default (**16000** non-streaming, **64000** streaming).
+
+A response cut off at the cap raises `ResponseTruncatedError` rather than returning
+truncated content. Raise the ceiling instead of catching it — and remember that with
+thinking on, thinking and answer share this budget.
+
+```python
+from majordomo_llm import ResponseTruncatedError
+
+try:
+    response = await llm.get_response(prompt)
+except ResponseTruncatedError as e:
+    print(f"hit {e.max_tokens} after {e.output_tokens} tokens")
+    print(e.partial_content)   # whatever arrived before the cut
 ```
 
 ## Streaming Response
@@ -240,6 +262,8 @@ from majordomo_llm.exceptions import (
     ConfigurationError,   # missing/invalid API key or unknown provider/model
     ProviderError,        # upstream API failure; has .provider and .original_error
     ResponseParsingError, # JSON parse failure; has .raw_content
+    ResponseTruncatedError,  # hit the max_tokens cap; has .max_tokens,
+                             # .output_tokens, .partial_content
 )
 
 try:
@@ -252,6 +276,10 @@ except ConfigurationError as e:
 
 All public `get_response` and `get_json_response` methods automatically retry up to 3 times
 with exponential backoff on transient failures before raising `ProviderError`.
+
+`ResponseTruncatedError` is deliberately outside that policy: it is not retried (the
+same budget would hit the same ceiling) and does not trigger `LLMCascade` failover
+(the next provider would truncate identically). Fix it by raising `max_tokens`.
 
 ## Complete Example
 

@@ -14,6 +14,7 @@ A unified Python interface for multiple LLM providers with automatic cost tracki
 - **Cost Tracking** - Automatic calculation of input/output token costs per request
 - **Structured Outputs** - Native support for Pydantic models and raw JSON Schema dicts
 - **Automatic Retries** - Built-in exponential backoff retry logic using tenacity
+- **Output Caps** - Per-model `max_tokens` in config plus a per-request override, and a raised `ResponseTruncatedError` when a response is cut off, instead of silently truncated content
 - **Automatic Fallback** - Cascade across providers with `LLMCascade` for resilience
 - **Optimal Routing** - The `majordomo` provider lets the Majordomo gateway pick the best backend for a canonical open-weight model at request time, with cost resolved from the routed backend
 - **Request Logging** - Optional async logging to PostgreSQL/MySQL/SQLite with S3 or local file storage for request/response bodies
@@ -51,7 +52,7 @@ from majordomo_llm import get_llm_instance
 
 async def main():
     # Create an LLM instance
-    llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+    llm = get_llm_instance("anthropic", "claude-sonnet-5")
 
     # Get a response
     response = await llm.get_response(
@@ -189,9 +190,15 @@ For local development, copy `.env.example` to `.env` and fill in your keys. Neve
 - `o3`, `o4-mini`
 
 #### Anthropic
-- `claude-opus-4-6`, `claude-sonnet-4-6`
+- `claude-opus-5`, `claude-fable-5`, `claude-sonnet-5`
+- `claude-opus-4-8` and its effort profiles `claude-opus-4-8-fast`, `claude-opus-4-8-medium`, `claude-opus-4-8-deep`
+- `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`
 - `claude-opus-4-5-20251101`, `claude-sonnet-4-5-20250929`, `claude-haiku-4-5-20251001`
-- `claude-opus-4-1-20250805`, `claude-opus-4-20250514`, `claude-sonnet-4-20250514`
+
+The Claude 4 family (`claude-opus-4-1-20250805`, `claude-opus-4-20250514`,
+`claude-sonnet-4-20250514`) was retired on 2026-08-25 — the Messages API returns
+`404 not_found_error` for all three. They are mapped in `deprecated_models` and
+resolve automatically to `claude-opus-5` / `claude-sonnet-5` with a warning.
 
 #### Gemini
 - `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-3.1-flash-lite-preview`
@@ -276,23 +283,23 @@ llm = get_llm_instance("openai", "gpt-4.1")
 
 All LLM instances support these async methods:
 
-#### `get_response(user_prompt, system_prompt=None, temperature=0.3, top_p=1.0) -> LLMResponse`
+#### `get_response(user_prompt, system_prompt=None, temperature=None, top_p=None, max_tokens=None) -> LLMResponse`
 
 Get a plain text response.
 
-#### `get_json_response(user_prompt, system_prompt=None, temperature=0.3, top_p=1.0) -> LLMJSONResponse`
+#### `get_json_response(user_prompt, system_prompt=None, temperature=None, top_p=None, max_tokens=None) -> LLMJSONResponse`
 
 Get a JSON response (automatically parsed).
 
-#### `get_response_stream(user_prompt, system_prompt=None, temperature=0.3, top_p=1.0) -> LLMStreamResponse`
+#### `get_response_stream(user_prompt, system_prompt=None, temperature=None, top_p=None, max_tokens=None) -> LLMStreamResponse`
 
 Get a streaming text response. Yields chunks via async iteration; usage metrics are available after the stream completes.
 
-#### `get_structured_json_response(response_model, user_prompt, system_prompt=None, temperature=0.3, top_p=1.0) -> LLMStructuredResponse`
+#### `get_structured_json_response(response_model, user_prompt, system_prompt=None, temperature=None, top_p=None, max_tokens=None) -> LLMStructuredResponse`
 
 Get a response validated against a Pydantic model.
 
-#### `get_json_schema_response(user_prompt, response_schema, system_prompt=None, schema_name="Response", schema_description=None, temperature=0.3, top_p=1.0) -> LLMResponse`
+#### `get_json_schema_response(user_prompt, response_schema, system_prompt=None, schema_name="Response", schema_description=None, temperature=None, top_p=None, max_tokens=None) -> LLMResponse`
 
 Get a response validated against a raw JSON Schema dict. `response.content` is canonical JSON.
 
@@ -313,6 +320,49 @@ every current OpenAI and Anthropic flagship, plus deployments that pin their val
 them logs a warning and the call proceeds without it, rather than failing — a cascade
 can legitimately mix models that do and do not accept sampling parameters.
 
+### Output Cap (`max_tokens`)
+
+Anthropic's Messages API and Bedrock's Converse API require an output cap on every
+request; the OpenAI-compatible providers and Gemini do not send one and inherit each
+model's own default. For the three that need it, the cap resolves in this order:
+
+1. A per-request `max_tokens=` argument
+2. The model's `max_tokens` in `llm_config.yaml`
+3. The library default — **16000** non-streaming, **64000** streaming
+
+```python
+llm = get_llm_instance("anthropic", "claude-sonnet-5")   # config sets 128000
+await llm.get_response(prompt)                            # uses 128000
+await llm.get_response(prompt, max_tokens=4096)           # uses 4096
+```
+
+The non-streaming default is lower because a large cap on a non-streaming call can
+exceed the provider SDK's HTTP timeout. Use `get_response_stream()` when you need the
+model's full ceiling.
+
+When thinking is enabled, thinking and answer share this budget — a deep-reasoning
+profile such as `claude-opus-4-8-deep` needs headroom for both.
+
+#### Truncation
+
+A response cut off at the cap raises `ResponseTruncatedError` rather than returning
+partial (or empty) content:
+
+```python
+from majordomo_llm import ResponseTruncatedError
+
+try:
+    response = await llm.get_response(prompt)
+except ResponseTruncatedError as e:
+    print(f"hit {e.max_tokens} after {e.output_tokens} tokens")
+    print(e.partial_content)   # whatever arrived before the cut
+```
+
+The error is not retried — re-sampling would spend the same budget against the same
+ceiling — and does not trigger `LLMCascade` failover, since the next provider would
+truncate identically. Every response also carries `stop_reason` if you would rather
+inspect it than catch.
+
 ### Response Objects
 
 All response objects include usage metrics:
@@ -330,6 +380,7 @@ All response objects include usage metrics:
 | `deprecation_warning` | `str \| None` | Warning if a deprecated model was auto-replaced |
 | `routed_provider` | `str \| None` | For `majordomo` optimal routing, the backend the gateway selected (`None` otherwise) |
 | `routed_model` | `str \| None` | For `majordomo` optimal routing, the routed backend's native model id (`None` otherwise) |
+| `stop_reason` | `str \| None` | Why the provider stopped generating (`end_turn`, `tool_use`, `max_tokens`, …); `None` where unreported |
 
 ## Advanced Usage
 
@@ -342,7 +393,7 @@ from majordomo_llm import LLMCascade
 
 # Providers are tried in order - first is primary, rest are fallbacks
 cascade = LLMCascade([
-    ("anthropic", "claude-sonnet-4-20250514"),  # Primary
+    ("anthropic", "claude-sonnet-5"),  # Primary
     ("openai", "gpt-4.1"),                        # First fallback
     ("gemini", "gemini-2.5-flash"),              # Last resort
 ])
@@ -385,7 +436,7 @@ You can also instantiate providers directly for more control:
 from majordomo_llm import Anthropic
 
 llm = Anthropic(
-    model="claude-sonnet-4-20250514",
+    model="claude-sonnet-5",
     input_cost=3.0,    # per million tokens
     output_cost=15.0,  # per million tokens
 )
@@ -416,7 +467,7 @@ from majordomo_llm.logging import LoggingLLM, PostgresAdapter, S3Adapter
 
 async def main():
     # Create your LLM instance
-    llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+    llm = get_llm_instance("anthropic", "claude-sonnet-5")
 
     # Set up database adapter (PostgreSQL, MySQL, or SQLite)
     db = await PostgresAdapter.create(
@@ -452,7 +503,7 @@ from majordomo_llm import get_llm_instance
 from majordomo_llm.logging import LoggingLLM, SqliteAdapter, FileStorageAdapter
 
 async def main():
-    llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+    llm = get_llm_instance("anthropic", "claude-sonnet-5")
 
     # SQLite for metrics (auto-creates database and table)
     db = await SqliteAdapter.create("llm_logs.db")
@@ -475,7 +526,7 @@ from majordomo_llm.providers.anthropic import Anthropic
 
 # Create LLM with API key alias for attribution
 llm = Anthropic(
-    model="claude-sonnet-4-20250514",
+    model="claude-sonnet-5",
     input_cost=3.0,
     output_cost=15.0,
     api_key_alias="production-team-1",  # Optional human-readable name

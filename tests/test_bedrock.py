@@ -7,8 +7,16 @@ import pytest
 from pydantic import BaseModel
 from tenacity import RetryError
 
-from majordomo_llm.base import TOKENS_PER_MILLION
-from majordomo_llm.exceptions import ConfigurationError, EmptyStructuredResponseError
+from majordomo_llm.base import (
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_STREAM_MAX_TOKENS,
+    TOKENS_PER_MILLION,
+)
+from majordomo_llm.exceptions import (
+    ConfigurationError,
+    EmptyStructuredResponseError,
+    ResponseTruncatedError,
+)
 from majordomo_llm.providers import Bedrock
 
 
@@ -433,3 +441,144 @@ class TestBedrockStream:
 
         assert response.content == "Hello world"
         assert response.input_tokens == 25
+
+
+def _truncated_converse_response(text: str = "") -> dict:
+    content = [{"text": text}] if text else []
+    return {
+        "output": {"message": {"role": "assistant", "content": content}},
+        "usage": {"inputTokens": 25, "outputTokens": 1024, "cacheReadInputTokens": 0},
+        "stopReason": "max_tokens",
+    }
+
+
+class TestBedrockMaxTokens:
+    """Tests for the configurable output cap and truncation detection."""
+
+    def _sent_cap(self, client) -> int:
+        return client.converse.call_args.kwargs["inferenceConfig"]["maxTokens"]
+
+    async def test_default_cap_on_plain_text(self):
+        """Should send DEFAULT_MAX_TOKENS, not the old hardcoded 1024."""
+        llm = _make_bedrock()
+        client = _install_mock_client(llm)
+        client.converse.return_value = _converse_response()
+
+        await llm.get_response("Test prompt")
+
+        assert self._sent_cap(client) == DEFAULT_MAX_TOKENS
+
+    async def test_config_cap_overrides_default(self):
+        """A model's configured max_tokens should reach the inference config."""
+        llm = Bedrock(
+            model="deepseek.v3.2",
+            input_cost=3.0,
+            output_cost=15.0,
+            api_key="test-key",
+            region="us-east-1",
+            max_tokens=163840,
+        )
+        client = _install_mock_client(llm)
+        client.converse.return_value = _converse_response()
+
+        await llm.get_response("Test prompt")
+
+        assert self._sent_cap(client) == 163840
+
+    async def test_per_request_cap_overrides_config(self):
+        """A per-request max_tokens should win over the configured value."""
+        llm = Bedrock(
+            model="deepseek.v3.2",
+            input_cost=3.0,
+            output_cost=15.0,
+            api_key="test-key",
+            region="us-east-1",
+            max_tokens=163840,
+        )
+        client = _install_mock_client(llm)
+        client.converse.return_value = _converse_response()
+
+        await llm.get_response("Test prompt", max_tokens=4096)
+
+        assert self._sent_cap(client) == 4096
+
+    async def test_streaming_uses_stream_default(self):
+        """Streaming should get the larger default."""
+        llm = _make_bedrock()
+        client = _install_mock_client(llm)
+
+        async def stream_iter():
+            yield {"contentBlockDelta": {"delta": {"text": "Hi"}}}
+            yield {"messageStop": {"stopReason": "end_turn"}}
+
+        client.converse_stream.return_value = {"stream": stream_iter()}
+
+        stream = await llm.get_response_stream("Hello")
+        async for _ in stream:
+            pass
+
+        sent = client.converse_stream.call_args.kwargs["inferenceConfig"]["maxTokens"]
+        assert sent == DEFAULT_STREAM_MAX_TOKENS
+
+    async def test_records_stop_reason(self):
+        """A normal response should carry the Converse stop reason."""
+        llm = _make_bedrock()
+        client = _install_mock_client(llm)
+        client.converse.return_value = _converse_response()
+
+        response = await llm.get_response("Test prompt")
+
+        assert response.stop_reason == "end_turn"
+
+    async def test_raises_when_truncated(self):
+        """Converse reports truncation as stopReason max_tokens; it must raise."""
+        llm = _make_bedrock()
+        client = _install_mock_client(llm)
+        client.converse.return_value = _truncated_converse_response()
+
+        with pytest.raises(ResponseTruncatedError) as exc_info:
+            await llm.get_response("Write six sections")
+
+        assert exc_info.value.output_tokens == 1024
+        assert exc_info.value.provider == "bedrock"
+
+    async def test_truncation_is_not_retried(self):
+        """Re-sampling would spend the same budget on the same ceiling."""
+        llm = _make_bedrock()
+        client = _install_mock_client(llm)
+        client.converse.return_value = _truncated_converse_response("Section one")
+
+        with pytest.raises(ResponseTruncatedError):
+            await llm.get_response("Write six sections")
+
+        assert client.converse.await_count == 1
+
+    async def test_streaming_raises_on_message_stop(self):
+        """A truncated stream should fail like a truncated non-streaming call."""
+        llm = _make_bedrock()
+        client = _install_mock_client(llm)
+
+        async def stream_iter():
+            yield {"contentBlockDelta": {"delta": {"text": "Section one"}}}
+            yield {"metadata": {"usage": {"inputTokens": 25, "outputTokens": 1024}}}
+            yield {"messageStop": {"stopReason": "max_tokens"}}
+
+        client.converse_stream.return_value = {"stream": stream_iter()}
+
+        stream = await llm.get_response_stream("Write six sections")
+        with pytest.raises(ResponseTruncatedError):
+            async for _ in stream:
+                pass
+
+    async def test_structured_truncation_raises_before_extraction(self):
+        """A cut-off tool call has no complete toolUse block; report the cause."""
+        llm = _make_bedrock()
+        client = _install_mock_client(llm)
+        truncated = _tool_use_response("CountryInfo", {})
+        truncated["stopReason"] = "max_tokens"
+        client.converse.return_value = truncated
+
+        with pytest.raises(ResponseTruncatedError):
+            await llm.get_structured_json_response(
+                response_model=CountryInfo, user_prompt="Tell me about France"
+            )

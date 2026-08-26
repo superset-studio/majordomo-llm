@@ -6,6 +6,8 @@ import pytest
 from pydantic import BaseModel
 
 from majordomo_llm.base import (
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_STREAM_MAX_TOKENS,
     LLM,
     TOKENS_PER_MILLION,
     LLMJSONResponse,
@@ -233,13 +235,13 @@ class TestLLMCostCalculation:
 
         async def _get_response_impl(
             self, user_prompt, system_prompt=None, temperature=0.3, top_p=1.0,
-            extra_headers=None,
+            extra_headers=None, max_tokens=None,
         ):
             raise NotImplementedError()
 
         async def _get_response_stream_impl(
             self, user_prompt, system_prompt=None, temperature=0.3, top_p=1.0,
-            extra_headers=None,
+            extra_headers=None, max_tokens=None,
         ):
             raise NotImplementedError()
 
@@ -396,13 +398,13 @@ class TestLLMFullModelName:
 
         async def _get_response_impl(
             self, user_prompt, system_prompt=None, temperature=0.3, top_p=1.0,
-            extra_headers=None,
+            extra_headers=None, max_tokens=None,
         ):
             raise NotImplementedError()
 
         async def _get_response_stream_impl(
             self, user_prompt, system_prompt=None, temperature=0.3, top_p=1.0,
-            extra_headers=None,
+            extra_headers=None, max_tokens=None,
         ):
             raise NotImplementedError()
 
@@ -410,12 +412,12 @@ class TestLLMFullModelName:
         """Should return 'provider:model' format."""
         llm = self.ConcreteLLM(
             provider="anthropic",
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-5",
             input_cost=3.0,
             output_cost=15.0,
         )
 
-        assert llm.get_full_model_name() == "anthropic:claude-sonnet-4-20250514"
+        assert llm.get_full_model_name() == "anthropic:claude-sonnet-5"
 
 
 class TestLLMStreamResponse:
@@ -426,13 +428,13 @@ class TestLLMStreamResponse:
 
         async def _get_response_impl(
             self, user_prompt, system_prompt=None, temperature=0.3, top_p=1.0,
-            extra_headers=None,
+            extra_headers=None, max_tokens=None,
         ):
             raise NotImplementedError()
 
         async def _get_response_stream_impl(
             self, user_prompt, system_prompt=None, temperature=0.3, top_p=1.0,
-            extra_headers=None,
+            extra_headers=None, max_tokens=None,
         ):
             raise NotImplementedError()
 
@@ -570,7 +572,7 @@ class _RecordingLLM(LLM):
 
     async def _get_response_impl(
         self, user_prompt, system_prompt=None, temperature=0.3, top_p=1.0,
-        extra_headers=None,
+        extra_headers=None, max_tokens=None,
     ):
         self.calls.append(user_prompt)
         return LLMResponse(
@@ -586,7 +588,7 @@ class _RecordingLLM(LLM):
     async def _get_json_schema_response(
         self, user_prompt, response_schema, system_prompt=None,
         schema_name="Response", schema_description=None,
-        temperature=0.3, top_p=1.0, extra_headers=None,
+        temperature=0.3, top_p=1.0, extra_headers=None, max_tokens=None,
     ):
         self.schema_calls.append(user_prompt)
         return LLMResponse(
@@ -724,3 +726,125 @@ class TestLLMWithHooks:
             user_prompt="prompt", response_schema=COUNTRY_SCHEMA,
         )
         assert response.content == '{"name":"y","population":2}'
+
+
+class _CapRecordingLLM(LLM):
+    """Test double that records the cap each call resolved to."""
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            provider="test", model="test-model", input_cost=1.0, output_cost=2.0,
+            **kwargs,
+        )
+        self.resolved: list[int] = []
+
+    async def _get_response_impl(
+        self, user_prompt, system_prompt=None, temperature=None, top_p=None,
+        extra_headers=None, max_tokens=None,
+    ):
+        self.resolved.append(self._resolve_max_tokens(max_tokens))
+        return LLMResponse(
+            # Valid JSON so the same double serves get_json_response.
+            content='{"ok": true}',
+            input_tokens=10, output_tokens=20, cached_tokens=0,
+            input_cost=0.01, output_cost=0.02, total_cost=0.03,
+            response_time=0.1, stop_reason="end_turn",
+        )
+
+    async def _get_response_stream_impl(
+        self, user_prompt, system_prompt=None, temperature=None, top_p=None,
+        extra_headers=None, max_tokens=None,
+    ):
+        self.resolved.append(self._resolve_max_tokens(max_tokens, streaming=True))
+        raise NotImplementedError()
+
+
+class TestResolveMaxTokens:
+    """Tests for the single place the output cap is decided."""
+
+    def test_falls_back_to_library_default(self):
+        llm = _CapRecordingLLM()
+        assert llm._resolve_max_tokens(None) == DEFAULT_MAX_TOKENS
+
+    def test_streaming_gets_the_larger_default(self):
+        llm = _CapRecordingLLM()
+        assert llm._resolve_max_tokens(None, streaming=True) == DEFAULT_STREAM_MAX_TOKENS
+
+    def test_config_value_beats_both_defaults(self):
+        llm = _CapRecordingLLM(max_tokens=8192)
+        assert llm._resolve_max_tokens(None) == 8192
+        assert llm._resolve_max_tokens(None, streaming=True) == 8192
+
+    def test_per_request_value_beats_config(self):
+        llm = _CapRecordingLLM(max_tokens=8192)
+        assert llm._resolve_max_tokens(2048) == 2048
+
+    @pytest.mark.parametrize("bad", [0, -1])
+    def test_rejects_non_positive(self, bad):
+        llm = _CapRecordingLLM()
+        with pytest.raises(ValueError, match="positive integer"):
+            llm._resolve_max_tokens(bad)
+
+    @pytest.mark.asyncio
+    async def test_public_method_threads_the_override(self):
+        llm = _CapRecordingLLM(max_tokens=8192)
+        await llm.get_response("prompt", max_tokens=1234)
+        assert llm.resolved == [1234]
+
+    @pytest.mark.asyncio
+    async def test_get_json_response_threads_the_override(self):
+        llm = _CapRecordingLLM()
+        await llm.get_json_response('{"a": 1}', max_tokens=4321)
+        assert llm.resolved == [4321]
+
+
+class TestStopReasonPropagation:
+    """stop_reason must survive every path that rebuilds an LLMResponse."""
+
+    @pytest.mark.asyncio
+    async def test_survives_plain_response(self):
+        llm = _CapRecordingLLM()
+        response = await llm.get_response("prompt")
+        assert response.stop_reason == "end_turn"
+
+    @pytest.mark.asyncio
+    async def test_survives_hook_rewrite(self):
+        """The rewrite path rebuilds the response; it must not drop fields."""
+        from majordomo_llm import HookOutcome, HookPipeline
+
+        class Hook:
+            name = "redactor"
+
+            async def before_call(self, prompt, ctx):
+                return HookOutcome.pass_through(self.name)
+
+            async def after_call(self, prompt, response, ctx):
+                return HookOutcome.redact(self.name, "REDACTED", "test")
+
+        llm = _CapRecordingLLM(hook_pipeline=HookPipeline([Hook()]))
+        response = await llm.get_response("prompt")
+
+        assert response.content == "REDACTED"
+        assert response.stop_reason == "end_turn"
+
+    @pytest.mark.asyncio
+    async def test_survives_stream_collect(self):
+        state = _StreamState(input_tokens=5, output_tokens=7, stop_reason="end_turn")
+
+        async def chunks():
+            yield "hi"
+
+        llm = _CapRecordingLLM()
+        stream = LLMStreamResponse(stream=chunks(), state=state, llm=llm)
+        response = await stream.collect()
+
+        assert stream.stop_reason == "end_turn"
+        assert response.stop_reason == "end_turn"
+
+    def test_defaults_to_none(self):
+        """Providers that report no stop reason leave the field empty."""
+        response = LLMResponse(
+            content="x", input_tokens=1, output_tokens=1, cached_tokens=0,
+            input_cost=0.0, output_cost=0.0, total_cost=0.0, response_time=0.1,
+        )
+        assert response.stop_reason is None

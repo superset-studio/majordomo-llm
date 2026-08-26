@@ -6,7 +6,7 @@ support for structured outputs via Pydantic models.
 
 Example:
     >>> from majordomo_llm import get_llm_instance
-    >>> llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+    >>> llm = get_llm_instance("anthropic", "claude-sonnet-5")
     >>> response = await llm.get_response("What is the capital of France?")
     >>> print(response.content)
     Paris is the capital of France.
@@ -29,6 +29,7 @@ from majordomo_llm.exceptions import (
     MajordomoError,
     ProviderError,
     ResponseParsingError,
+    ResponseTruncatedError,
     StructuredOutputUnsupported,
 )
 from majordomo_llm.factory import (
@@ -71,7 +72,7 @@ from majordomo_llm.providers.novita import Novita
 from majordomo_llm.providers.openai import OpenAI
 from majordomo_llm.providers.together import Together
 
-__version__ = "0.21.0"
+__version__ = "0.22.0"
 
 __all__ = [
     # Base classes and types
@@ -88,6 +89,7 @@ __all__ = [
     "ProviderError",
     "ResponseParsingError",
     "EmptyStructuredResponseError",
+    "ResponseTruncatedError",
     "StructuredOutputUnsupported",
     # Hooks
     "HookContext",

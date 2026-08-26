@@ -6,7 +6,7 @@ Automatically fall back across providers when one fails.
 from majordomo_llm import LLMCascade
 
 cascade = LLMCascade([
-    ("anthropic", "claude-sonnet-4-20250514"),  # Primary
+    ("anthropic", "claude-sonnet-5"),  # Primary
     ("openai", "gpt-4.1"),                        # Fallback
     ("gemini", "gemini-2.5-flash"),              # Last resort
 ])
@@ -28,7 +28,7 @@ Route all cascade providers through a gateway:
 ```python
 cascade = LLMCascade(
     [
-        ("anthropic", "claude-sonnet-4-20250514"),
+        ("anthropic", "claude-sonnet-5"),
         ("openai", "gpt-4.1"),
         ("gemini", "gemini-2.5-flash"),
     ],

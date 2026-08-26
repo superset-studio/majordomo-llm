@@ -72,6 +72,7 @@ class BedrockMantle(Anthropic):
         base_url: str | None = None,
         default_headers: dict[str, str] | None = None,
         region: str | None = None,
+        max_tokens: int | None = None,
     ) -> None:
         """Initialize the Bedrock Mantle provider.
 
@@ -95,6 +96,8 @@ class BedrockMantle(Anthropic):
             region: AWS region (e.g., ``us-east-1``). Defaults to ``AWS_REGION``
                 or ``AWS_DEFAULT_REGION`` env vars. Required unless ``base_url``
                 is explicitly provided.
+            max_tokens: Default output cap for this model, forwarded to the
+                Anthropic provider.
 
         Raises:
             ConfigurationError: If no bearer token or region can be resolved.
@@ -152,6 +155,7 @@ class BedrockMantle(Anthropic):
             api_key_alias=api_key_alias,
             base_url=resolved_base_url,
             default_headers=default_headers,
+            max_tokens=max_tokens,
         )
         # Override the provider identity set by Anthropic.__init__ so cost
         # tracking, logging, and cascade dispatch see Bedrock Mantle as its own

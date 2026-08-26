@@ -67,6 +67,7 @@ class Bedrock(LLM):
         base_url: str | None = None,
         default_headers: dict[str, str] | None = None,
         region: str | None = None,
+        max_tokens: int | None = None,
     ) -> None:
         """Initialize the Bedrock provider.
 
@@ -96,6 +97,8 @@ class Bedrock(LLM):
                 direct AWS callers must not receive proxy auth headers.
             region: AWS region (e.g., "us-east-1"). Defaults to ``AWS_REGION``
                 or ``AWS_DEFAULT_REGION`` env vars.
+            max_tokens: Default output cap for this model. ``None`` uses the
+                library defaults (16000 non-streaming, 64000 streaming).
 
         Raises:
             ConfigurationError: If no API key or region can be resolved.
@@ -125,6 +128,7 @@ class Bedrock(LLM):
             api_key_alias=api_key_alias,
             base_url=base_url,
             default_headers=default_headers,
+            max_tokens=max_tokens,
         )
         self.region = resolved_region
         # botocore reads the bearer token from this env var when signing
@@ -197,12 +201,15 @@ class Bedrock(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Get a plain text response from Bedrock via Converse."""
         if system_prompt is None:
             system_prompt = "You are a helpful assistant"
         if extra_headers:
             logger.debug("extra_headers ignored by Bedrock provider")
+
+        resolved_max_tokens = self._resolve_max_tokens(max_tokens)
 
         start_time = time.time()
         try:
@@ -211,7 +218,9 @@ class Bedrock(LLM):
                     modelId=self.model,
                     messages=_bedrock_user_message(user_prompt),
                     system=_bedrock_system_prompt(system_prompt),
-                    inferenceConfig=self._inference_config(temperature, top_p, 1024),
+                    inferenceConfig=self._inference_config(
+                        temperature, top_p, resolved_max_tokens
+                    ),
                 )
         except (ClientError, BotoCoreError) as e:
             raise ProviderError(
@@ -223,6 +232,10 @@ class Bedrock(LLM):
         execution_time = time.time() - start_time
         content = _extract_text_content(response)
         input_tokens, output_tokens, cached_tokens, cache_creation_tokens = _extract_usage(response)
+        # Converse spells the stop reason "stopReason" but uses the same
+        # "max_tokens" value as the Messages API, so no normalization is needed.
+        stop_reason = response.get("stopReason")
+        self._check_truncation(stop_reason, resolved_max_tokens, output_tokens, content)
         input_cost, output_cost, total_cost = self._calculate_costs(
             input_tokens, output_tokens, cached_tokens, cache_creation_tokens
         )
@@ -238,6 +251,7 @@ class Bedrock(LLM):
             total_cost=total_cost,
             response_time=execution_time,
             deprecation_warning=self.deprecation_warning,
+            stop_reason=stop_reason,
         )
 
     async def _get_response_stream_impl(
@@ -247,6 +261,7 @@ class Bedrock(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMStreamResponse:
         """Get a streaming text response from Bedrock via Converse Stream."""
         if system_prompt is None:
@@ -255,6 +270,7 @@ class Bedrock(LLM):
             logger.debug("extra_headers ignored by Bedrock provider")
 
         state = _StreamState()
+        resolved_max_tokens = self._resolve_max_tokens(max_tokens, streaming=True)
 
         async def generator() -> AsyncIterator[str]:
             try:
@@ -263,7 +279,9 @@ class Bedrock(LLM):
                         modelId=self.model,
                         messages=_bedrock_user_message(user_prompt),
                         system=_bedrock_system_prompt(system_prompt),
-                        inferenceConfig=self._inference_config(temperature, top_p, 1024),
+                        inferenceConfig=self._inference_config(
+                            temperature, top_p, resolved_max_tokens
+                        ),
                     )
                     async for event in response["stream"]:
                         if "contentBlockDelta" in event:
@@ -271,6 +289,8 @@ class Bedrock(LLM):
                             text = delta.get("text")
                             if text:
                                 yield text
+                        elif "messageStop" in event:
+                            state.stop_reason = event["messageStop"].get("stopReason")
                         elif "metadata" in event:
                             usage = event["metadata"].get("usage", {})
                             state.input_tokens = usage.get("inputTokens", state.input_tokens)
@@ -287,6 +307,9 @@ class Bedrock(LLM):
                     provider="bedrock",
                     original_error=e,
                 ) from e
+            self._check_truncation(
+                state.stop_reason, resolved_max_tokens, state.output_tokens, ""
+            )
 
         return LLMStreamResponse(stream=generator(), state=state, llm=self)
 
@@ -300,6 +323,7 @@ class Bedrock(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Bedrock structured output via Converse tool calling.
 
@@ -322,6 +346,7 @@ class Bedrock(LLM):
         else:
             system_prompt = f"{system_prompt}\n\n{tool_instruction}"
 
+        resolved_max_tokens = self._resolve_max_tokens(max_tokens)
         tool_config = _bedrock_tool_config(
             name=schema_name,
             description=description,
@@ -336,7 +361,9 @@ class Bedrock(LLM):
                     modelId=self.model,
                     messages=_bedrock_user_message(user_prompt),
                     system=_bedrock_system_prompt(system_prompt),
-                    inferenceConfig=self._inference_config(temperature, top_p, 4096),
+                    inferenceConfig=self._inference_config(
+                        temperature, top_p, resolved_max_tokens
+                    ),
                     toolConfig=tool_config,
                 )
         except (ClientError, BotoCoreError) as e:
@@ -347,8 +374,12 @@ class Bedrock(LLM):
             ) from e
 
         execution_time = time.time() - start_time
-        content = _extract_tool_use_input(response, schema_name)
         input_tokens, output_tokens, cached_tokens, cache_creation_tokens = _extract_usage(response)
+        stop_reason = response.get("stopReason")
+        # Guard before extraction: a truncated turn has no complete toolUse block,
+        # so this would otherwise surface as a missing-tool parse error.
+        self._check_truncation(stop_reason, resolved_max_tokens, output_tokens, "")
+        content = _extract_tool_use_input(response, schema_name)
         input_cost, output_cost, total_cost = self._calculate_costs(
             input_tokens, output_tokens, cached_tokens, cache_creation_tokens
         )
@@ -363,6 +394,7 @@ class Bedrock(LLM):
             output_cost=output_cost,
             total_cost=total_cost,
             response_time=execution_time,
+            stop_reason=stop_reason,
         )
 
     @retry_provider_call
@@ -374,6 +406,7 @@ class Bedrock(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMJSONResponse:
         """Bedrock structured output via Converse forced tool use.
 
@@ -392,6 +425,7 @@ class Bedrock(LLM):
         else:
             system_prompt = f"{system_prompt}\n\n{tool_instruction}"
 
+        resolved_max_tokens = self._resolve_max_tokens(max_tokens)
         tool_config = _bedrock_tool_config(
             name="structured_response",
             description=description,
@@ -406,7 +440,9 @@ class Bedrock(LLM):
                     modelId=self.model,
                     messages=_bedrock_user_message(user_prompt),
                     system=_bedrock_system_prompt(system_prompt),
-                    inferenceConfig=self._inference_config(temperature, top_p, 4096),
+                    inferenceConfig=self._inference_config(
+                        temperature, top_p, resolved_max_tokens
+                    ),
                     toolConfig=tool_config,
                 )
         except (ClientError, BotoCoreError) as e:
@@ -417,8 +453,12 @@ class Bedrock(LLM):
             ) from e
 
         execution_time = time.time() - start_time
-        content = _extract_tool_use_input(response, "structured_response")
         input_tokens, output_tokens, cached_tokens, cache_creation_tokens = _extract_usage(response)
+        # Guard before extraction: a truncated turn has no complete toolUse block.
+        self._check_truncation(
+            response.get("stopReason"), resolved_max_tokens, output_tokens, ""
+        )
+        content = _extract_tool_use_input(response, "structured_response")
         input_cost, output_cost, total_cost = self._calculate_costs(
             input_tokens, output_tokens, cached_tokens, cache_creation_tokens
         )

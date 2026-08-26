@@ -31,7 +31,7 @@ Use the same interface across all supported providers:
 llm = get_llm_instance("openai", "gpt-4.1")
 
 # Anthropic
-llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+llm = get_llm_instance("anthropic", "claude-sonnet-5")
 
 # Google Gemini
 llm = get_llm_instance("gemini", "gemini-2.5-flash")
@@ -108,7 +108,7 @@ Route requests through a proxy or gateway:
 
 ```python
 llm = get_llm_instance(
-    "anthropic", "claude-sonnet-4-20250514",
+    "anthropic", "claude-sonnet-5",
     api_key="sk-ant-...",
     base_url="https://gateway.example.com",
     default_headers={"X-Majordomo-Key": "mdm_key_here"},
@@ -130,7 +130,7 @@ Track all requests for analytics:
 from majordomo_llm import get_llm_instance
 from majordomo_llm.logging import LoggingLLM, SqliteAdapter, FileStorageAdapter
 
-llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+llm = get_llm_instance("anthropic", "claude-sonnet-5")
 
 db = await SqliteAdapter.create("llm_logs.db")
 storage = await FileStorageAdapter.create("./request_logs")

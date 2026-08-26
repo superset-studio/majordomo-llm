@@ -32,7 +32,7 @@ class LoggingLLM(LLM):
         >>> from majordomo_llm import get_llm_instance
         >>> from majordomo_llm.logging import LoggingLLM, PostgresAdapter, S3Adapter
         >>>
-        >>> llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+        >>> llm = get_llm_instance("anthropic", "claude-sonnet-5")
         >>> db = await PostgresAdapter.create(host="localhost", ...)
         >>> storage = await S3Adapter.create(bucket="my-bucket")
         >>> logged_llm = LoggingLLM(llm, db, storage)
@@ -73,6 +73,7 @@ class LoggingLLM(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Unused — :meth:`get_response` overrides the public method directly."""
         raise NotImplementedError(
@@ -87,6 +88,7 @@ class LoggingLLM(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMStreamResponse:
         """Unused — :meth:`get_response_stream` overrides the public method directly."""
         raise NotImplementedError(
@@ -164,6 +166,7 @@ class LoggingLLM(LLM):
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
         *,
+        max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Get a plain text response from the LLM with logging."""
@@ -172,12 +175,14 @@ class LoggingLLM(LLM):
             "system_prompt": system_prompt,
             "temperature": temperature,
             "top_p": top_p,
+            "max_tokens": max_tokens,
         }
 
         try:
             response = await self._llm.get_response(
                 user_prompt, system_prompt, temperature, top_p,
                 extra_headers=extra_headers,
+                max_tokens=max_tokens,
                 caller_metadata=caller_metadata,
             )
             self._fire_and_forget(
@@ -206,6 +211,7 @@ class LoggingLLM(LLM):
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
         *,
+        max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
     ) -> LLMStreamResponse:
         """Get a streaming text response from the LLM with logging."""
@@ -215,12 +221,14 @@ class LoggingLLM(LLM):
             "system_prompt": system_prompt,
             "temperature": temperature,
             "top_p": top_p,
+            "max_tokens": max_tokens,
         }
 
         try:
             stream = await self._llm.get_response_stream(
                 user_prompt, system_prompt, temperature, top_p,
                 extra_headers=extra_headers,
+                max_tokens=max_tokens,
             )
         except Exception as e:
             self._fire_and_forget(
@@ -262,6 +270,7 @@ class LoggingLLM(LLM):
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
         *,
+        max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
     ) -> LLMJSONResponse:
         """Get a JSON response from the LLM with logging."""
@@ -270,12 +279,14 @@ class LoggingLLM(LLM):
             "system_prompt": system_prompt,
             "temperature": temperature,
             "top_p": top_p,
+            "max_tokens": max_tokens,
         }
 
         try:
             response = await self._llm.get_json_response(
                 user_prompt, system_prompt, temperature, top_p,
                 extra_headers=extra_headers,
+                max_tokens=max_tokens,
                 caller_metadata=caller_metadata,
             )
             self._fire_and_forget(
@@ -305,6 +316,7 @@ class LoggingLLM(LLM):
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
         *,
+        max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
     ) -> LLMStructuredResponse:
         """Get a structured response validated against a Pydantic model with logging."""
@@ -314,12 +326,14 @@ class LoggingLLM(LLM):
             "system_prompt": system_prompt,
             "temperature": temperature,
             "top_p": top_p,
+            "max_tokens": max_tokens,
         }
 
         try:
             response = await self._llm.get_structured_json_response(
                 response_model, user_prompt, system_prompt, temperature, top_p,
                 extra_headers=extra_headers,
+                max_tokens=max_tokens,
                 caller_metadata=caller_metadata,
             )
             self._fire_and_forget(

@@ -155,7 +155,7 @@ def get_supported_models(provider: str) -> list[str]:
 
     Example:
         >>> models = get_supported_models("anthropic")
-        >>> "claude-sonnet-4-20250514" in models
+        >>> "claude-sonnet-5" in models
         True
     """
     provider_config = LLM_CONFIG.get(provider)
@@ -234,7 +234,7 @@ def get_llm_instance(
     Args:
         provider: The LLM provider name. One of: "openai", "anthropic", "gemini",
             "deepseek", "cohere".
-        model: The model identifier (e.g., "gpt-4o", "claude-sonnet-4-20250514").
+        model: The model identifier (e.g., "gpt-4o", "claude-sonnet-5").
         api_key: Optional API key. If not provided, the provider will fall back
             to its respective environment variable.
         base_url: Optional custom base URL for routing through a proxy.
@@ -262,7 +262,7 @@ def get_llm_instance(
             ``supports_web_search: true``.
 
     Example:
-        >>> llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+        >>> llm = get_llm_instance("anthropic", "claude-sonnet-5")
         >>> response = await llm.get_response("Hello!")
     """
     llm_config_entry = LLM_CONFIG.get(provider)
@@ -352,6 +352,12 @@ def get_llm_instance(
     if provider == "anthropic":
         provider_kwargs["reasoning_effort"] = model_attributes.get("reasoning_effort")
         provider_kwargs["thinking"] = model_attributes.get("thinking")
+
+    # Only providers whose API requires an output cap on every request read this.
+    # Everywhere else the model's own default applies and the key is meaningless,
+    # so it is not forwarded rather than silently accepted.
+    if provider in ("anthropic", "bedrock", "bedrock_mantle"):
+        provider_kwargs["max_tokens"] = model_attributes.get("max_tokens")
 
     # An entry may override its API model ID via the ``model`` attribute. This
     # lets the same underlying model be registered under multiple YAML keys —
@@ -475,7 +481,7 @@ def register_alias(name: str, target: AliasTarget) -> None:
     Example:
         >>> register_alias("fast", ("anthropic", "claude-3-5-haiku-20241022"))
         >>> register_alias("resilient", [
-        ...     ("anthropic", "claude-sonnet-4-20250514"),
+        ...     ("anthropic", "claude-sonnet-5"),
         ...     ("openai", "gpt-4o"),
         ... ])
     """

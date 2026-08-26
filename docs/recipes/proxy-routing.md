@@ -10,7 +10,7 @@ Point any provider at a custom base URL:
 from majordomo_llm import get_llm_instance
 
 llm = get_llm_instance(
-    "anthropic", "claude-sonnet-4-20250514",
+    "anthropic", "claude-sonnet-5",
     base_url="https://gateway.example.com",
     default_headers={"X-Majordomo-Key": "mdm_key_here"},
 )
@@ -77,7 +77,7 @@ Per-request headers take precedence over instance headers with the same key:
 
 ```python
 llm = get_llm_instance(
-    "anthropic", "claude-sonnet-4-20250514",
+    "anthropic", "claude-sonnet-5",
     base_url="https://gateway.example.com",
     default_headers={
         "X-Majordomo-Key": "mdm_key_here",
@@ -101,7 +101,7 @@ from majordomo_llm import LLMCascade
 
 cascade = LLMCascade(
     [
-        ("anthropic", "claude-sonnet-4-20250514"),
+        ("anthropic", "claude-sonnet-5"),
         ("openai", "gpt-4.1"),
         ("gemini", "gemini-2.5-flash"),
     ],
@@ -125,7 +125,7 @@ from majordomo_llm import get_llm_instance
 from majordomo_llm.logging import LoggingLLM, SqliteAdapter, FileStorageAdapter
 
 llm = get_llm_instance(
-    "anthropic", "claude-sonnet-4-20250514",
+    "anthropic", "claude-sonnet-5",
     base_url="https://gateway.example.com",
     default_headers={"X-Majordomo-Key": "mdm_key_here"},
 )

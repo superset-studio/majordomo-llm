@@ -160,6 +160,7 @@ class Fireworks(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Get a plain text response from Fireworks."""
         return await self._get_response(
@@ -232,6 +233,7 @@ class Fireworks(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMStreamResponse:
         """Get a streaming text response from Fireworks."""
         messages: list[Any] = []
@@ -294,6 +296,7 @@ class Fireworks(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Fireworks-specific implementation using OpenAI-compatible JSON Schema."""
         messages: list[Any] = []

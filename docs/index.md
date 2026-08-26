@@ -27,7 +27,7 @@ class Summary(BaseModel):
 
 async def main():
     # Works with any provider: openai, anthropic, gemini, deepseek, cohere
-    llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+    llm = get_llm_instance("anthropic", "claude-sonnet-5")
 
     response = await llm.get_structured_json_response(
         response_model=Summary,
@@ -49,7 +49,7 @@ Write once, run on any provider. Switch between OpenAI, Anthropic, Gemini, DeepS
 
 ```python
 llm = get_llm_instance("openai", "gpt-4.1")
-llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+llm = get_llm_instance("anthropic", "claude-sonnet-5")
 llm = get_llm_instance("gemini", "gemini-2.5-flash")
 ```
 
@@ -93,7 +93,7 @@ Automatically fall back to alternative providers when one fails.
 from majordomo_llm import LLMCascade
 
 cascade = LLMCascade([
-    ("anthropic", "claude-sonnet-4-20250514"),
+    ("anthropic", "claude-sonnet-5"),
     ("openai", "gpt-4.1"),
     ("gemini", "gemini-2.5-flash"),
 ])
@@ -106,7 +106,7 @@ Route requests through any gateway or proxy with custom base URLs and HTTP heade
 
 ```python
 llm = get_llm_instance(
-    "anthropic", "claude-sonnet-4-20250514",
+    "anthropic", "claude-sonnet-5",
     api_key="sk-ant-...",
     base_url="https://gateway.example.com",
     default_headers={"X-Majordomo-Key": "mdm_key_here"},

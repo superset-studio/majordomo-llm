@@ -17,6 +17,7 @@ from anthropic.types import (
 )
 
 from majordomo_llm.base import (
+    DEFAULT_MAX_TOKENS,
     LLM,
     LLMResponse,
     LLMStreamResponse,
@@ -54,7 +55,7 @@ class Anthropic(LLM):
 
     Example:
         >>> llm = Anthropic(
-        ...     model="claude-sonnet-4-20250514",
+        ...     model="claude-sonnet-5",
         ...     input_cost=3.0,
         ...     output_cost=15.0,
         ... )
@@ -83,11 +84,12 @@ class Anthropic(LLM):
         api_key_alias: str | None = None,
         base_url: str | None = None,
         default_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> None:
         """Initialize the Anthropic provider.
 
         Args:
-            model: The Claude model identifier (e.g., "claude-sonnet-4-20250514").
+            model: The Claude model identifier (e.g., "claude-sonnet-5").
             input_cost: Cost per million input tokens in USD.
             output_cost: Cost per million output tokens in USD.
             supports_temperature_top_p: Whether temperature/top_p are supported.
@@ -109,9 +111,12 @@ class Anthropic(LLM):
                 the field, so the model runs without thinking. Effort only
                 meaningfully modulates depth when thinking is on, so pair the two.
                 Note: ``disabled`` is rejected on Fable 5 (thinking is always on),
-                and with thinking on the fixed ``max_tokens`` (1024 for plain
-                responses, 4096/8192 for structured) covers thinking + answer —
-                raise it via a dedicated config entry if answers truncate.
+                and with thinking on ``max_tokens`` covers thinking + answer, so
+                a deep-thinking profile needs headroom for both. Raise it with the
+                ``max_tokens`` key in ``llm_config.yaml`` or the per-request
+                ``max_tokens`` argument; a response that hits the cap raises
+                :class:`~majordomo_llm.exceptions.ResponseTruncatedError` rather
+                than returning silently truncated content.
             cached_input_cost: Cost per million cache-read tokens in USD
                 (``cache_read_input_tokens``), billed on top of uncached input.
             cache_write_cost: Cost per million cache-creation tokens in USD
@@ -124,6 +129,8 @@ class Anthropic(LLM):
             api_key_alias: Optional human-readable name for the API key.
             base_url: Optional custom base URL for routing through a proxy.
             default_headers: Optional headers sent with every request.
+            max_tokens: Default output cap for this model. ``None`` uses the
+                library defaults (16000 non-streaming, 64000 streaming).
 
         Raises:
             ConfigurationError: If no API key is provided and env var is not set.
@@ -155,6 +162,7 @@ class Anthropic(LLM):
             api_key_alias=api_key_alias,
             base_url=base_url,
             default_headers=default_headers,
+            max_tokens=max_tokens,
         )
         self.client = anthropic.AsyncAnthropic(
             api_key=resolved_api_key,
@@ -206,6 +214,7 @@ class Anthropic(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Get a plain text response from Anthropic."""
         if system_prompt is None:
@@ -221,10 +230,12 @@ class Anthropic(LLM):
                 WebSearchTool20250305Param(type="web_search_20250305", name="web_search")
             )
 
+        resolved_max_tokens = self._resolve_max_tokens(max_tokens)
+
         try:
             response_message = await self.client.messages.create(
                 model=self.model,
-                max_tokens=1024,
+                max_tokens=resolved_max_tokens,
                 system=system_message,
                 messages=messages,
                 tools=tools,
@@ -245,6 +256,12 @@ class Anthropic(LLM):
 
         input_tokens = response_message.usage.input_tokens
         output_tokens = response_message.usage.output_tokens
+        self._check_truncation(
+            response_message.stop_reason,
+            resolved_max_tokens,
+            output_tokens,
+            "\n".join(final_response),
+        )
         cached_tokens = response_message.usage.cache_read_input_tokens or 0
         cache_creation_tokens = response_message.usage.cache_creation_input_tokens or 0
         input_cost, output_cost, total_cost = self._calculate_costs(
@@ -265,6 +282,7 @@ class Anthropic(LLM):
             response_time=execution_time,
             tool_use_cost=tool_use_cost,
             deprecation_warning=self.deprecation_warning,
+            stop_reason=response_message.stop_reason,
         )
 
     async def _get_response_stream_impl(
@@ -274,19 +292,21 @@ class Anthropic(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMStreamResponse:
         """Get a streaming text response from Anthropic."""
         if system_prompt is None:
             system_prompt = "You are a helpful assistant"
 
         state = _StreamState()
+        resolved_max_tokens = self._resolve_max_tokens(max_tokens, streaming=True)
         messages = _anthropic_user_message(user_prompt)
         system_message = _anthropic_system_prompt(system_prompt, self.use_prompt_caching)
 
         try:
             response = await self.client.messages.create(
                 model=self.model,
-                max_tokens=1024,
+                max_tokens=resolved_max_tokens,
                 system=system_message,
                 messages=messages,
                 stream=True,
@@ -314,12 +334,19 @@ class Anthropic(LLM):
                         yield event.delta.text
                     elif event.type == "message_delta":
                         state.output_tokens = event.usage.output_tokens
+                        state.stop_reason = event.delta.stop_reason
             except anthropic.APIError as e:
                 raise ProviderError(
                     f"Anthropic API error: {e}",
                     provider="anthropic",
                     original_error=e,
                 ) from e
+            # Raised after the last chunk is yielded, so a truncated stream fails
+            # the same way a truncated non-streaming call does rather than ending
+            # quietly mid-sentence.
+            self._check_truncation(
+                state.stop_reason, resolved_max_tokens, state.output_tokens, ""
+            )
 
         return LLMStreamResponse(stream=generator(), state=state, llm=self)
 
@@ -333,6 +360,7 @@ class Anthropic(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Anthropic structured JSON output.
 
@@ -345,6 +373,8 @@ class Anthropic(LLM):
         against the caller's original schema and rejects an empty/all-null
         result via :func:`canonicalize_json_schema_output`.
         """
+        resolved_max_tokens = self._resolve_max_tokens(max_tokens)
+
         if self.use_web_search:
             response, execution_time = await self._json_schema_response_with_web_search_helper(
                 user_prompt=user_prompt,
@@ -353,10 +383,11 @@ class Anthropic(LLM):
                 schema_name=schema_name,
                 schema_description=schema_description,
                 extra_headers=extra_headers,
+                max_tokens=resolved_max_tokens,
             )
             content = _extract_tool_use_content(response.content, schema_name)
             return self._finalize_json_schema_response(
-                content, response, execution_time, response_schema
+                content, response, execution_time, response_schema, resolved_max_tokens
             )
 
         if self.supports_structured_outputs:
@@ -367,6 +398,7 @@ class Anthropic(LLM):
                 temperature=temperature,
                 top_p=top_p,
                 extra_headers=extra_headers,
+                max_tokens=resolved_max_tokens,
             )
 
         return await self._forced_tool_json_schema_response(
@@ -378,6 +410,7 @@ class Anthropic(LLM):
             temperature=temperature,
             top_p=top_p,
             extra_headers=extra_headers,
+            max_tokens=resolved_max_tokens,
         )
 
     async def _native_json_schema_response(
@@ -388,6 +421,7 @@ class Anthropic(LLM):
         temperature: float | None,
         top_p: float | None,
         extra_headers: dict[str, str] | None,
+        max_tokens: int,
     ) -> LLMResponse:
         """Native structured outputs via ``output_config.format`` (constrained decoding).
 
@@ -413,7 +447,7 @@ class Anthropic(LLM):
         try:
             response = await self.client.messages.create(
                 model=self.model,
-                max_tokens=8192,
+                max_tokens=max_tokens,
                 system=system_message,
                 messages=messages,
                 **output_config,
@@ -435,7 +469,7 @@ class Anthropic(LLM):
             )
         content = _extract_structured_text(response.content)
         return self._finalize_json_schema_response(
-            content, response, execution_time, response_schema
+            content, response, execution_time, response_schema, max_tokens
         )
 
     async def _forced_tool_json_schema_response(
@@ -448,6 +482,7 @@ class Anthropic(LLM):
         temperature: float | None,
         top_p: float | None,
         extra_headers: dict[str, str] | None,
+        max_tokens: int,
     ) -> LLMResponse:
         """Forced-tool fallback for models without native structured outputs.
 
@@ -479,7 +514,7 @@ class Anthropic(LLM):
         try:
             response = await self.client.messages.create(
                 model=self.model,
-                max_tokens=8192,
+                max_tokens=max_tokens,
                 system=system_message,
                 messages=messages,
                 tools=tools,
@@ -498,7 +533,7 @@ class Anthropic(LLM):
         execution_time = time.time() - start_time
         content = _extract_tool_use_content(response.content, schema_name)
         return self._finalize_json_schema_response(
-            content, response, execution_time, response_schema
+            content, response, execution_time, response_schema, max_tokens
         )
 
     def _finalize_json_schema_response(
@@ -507,10 +542,17 @@ class Anthropic(LLM):
         response: Any,
         execution_time: float,
         response_schema: dict[str, Any],
+        max_tokens: int,
     ) -> LLMResponse:
-        """Compute usage/cost and validate structured content into an ``LLMResponse``."""
+        """Compute usage/cost and validate structured content into an ``LLMResponse``.
+
+        Raises :class:`ResponseTruncatedError` before parsing: a structured
+        response cut off at the cap is malformed JSON, and reporting the cause
+        beats a downstream parse error that names the symptom.
+        """
         input_tokens = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
+        self._check_truncation(response.stop_reason, max_tokens, output_tokens, str(content))
         cached_tokens = response.usage.cache_read_input_tokens or 0
         cache_creation_tokens = response.usage.cache_creation_input_tokens or 0
         input_cost, output_cost, total_cost = self._calculate_costs(
@@ -530,6 +572,7 @@ class Anthropic(LLM):
             total_cost=total_cost,
             response_time=execution_time,
             tool_use_cost=tool_use_cost,
+            stop_reason=response.stop_reason,
         )
 
     async def _json_schema_response_with_web_search_helper(
@@ -540,6 +583,7 @@ class Anthropic(LLM):
         schema_name: str = "Response",
         schema_description: str | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> tuple[Any, float]:
         """Helper for web search with raw JSON-schema structured response."""
         structured_response_tool = ToolParam(
@@ -571,7 +615,7 @@ class Anthropic(LLM):
             while search_count < 3:
                 response = await self.client.messages.create(
                     model=self.model,
-                    max_tokens=8192,
+                    max_tokens=max_tokens,
                     system=system_message,
                     messages=current_messages,
                     tools=tools,
@@ -602,7 +646,7 @@ class Anthropic(LLM):
 
             final_response = await self.client.messages.create(
                 model=self.model,
-                max_tokens=4096,
+                max_tokens=max_tokens,
                 system=_anthropic_system_prompt(system_prompt, self.use_prompt_caching),
                 messages=current_messages,
                 tools=[structured_response_tool],

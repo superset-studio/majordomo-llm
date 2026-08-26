@@ -140,6 +140,7 @@ class DeepSeek(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Get a plain text response from DeepSeek."""
         return await self._get_response(
@@ -212,6 +213,7 @@ class DeepSeek(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMStreamResponse:
         """Get a streaming text response from DeepSeek."""
         messages: list[Any] = []
@@ -274,6 +276,7 @@ class DeepSeek(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """DeepSeek-specific implementation using json_object mode.
 

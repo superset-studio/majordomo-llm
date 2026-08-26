@@ -27,7 +27,7 @@ import asyncio
 from majordomo_llm import get_llm_instance
 
 async def main():
-    llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+    llm = get_llm_instance("anthropic", "claude-sonnet-5")
     resp = await llm.get_response("What is the capital of France?")
     print(resp.content)
     print(resp.total_cost)
@@ -42,7 +42,7 @@ import asyncio
 from majordomo_llm import get_llm_instance
 
 async def main():
-    llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+    llm = get_llm_instance("anthropic", "claude-sonnet-5")
     stream = await llm.get_response_stream("What is the capital of France?")
     async for chunk in stream:
         print(chunk, end="", flush=True)

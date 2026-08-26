@@ -58,11 +58,11 @@ class TestGetLLMInstance:
 
     def test_creates_anthropic_provider(self, mock_all_clients):
         """Should create Anthropic instance for anthropic provider."""
-        llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+        llm = get_llm_instance("anthropic", "claude-sonnet-5")
 
         assert isinstance(llm, Anthropic)
         assert llm.provider == "anthropic"
-        assert llm.model == "claude-sonnet-4-20250514"
+        assert llm.model == "claude-sonnet-5"
 
     def test_creates_openai_provider(self, mock_all_clients):
         """Should create OpenAI instance for openai provider."""
@@ -94,9 +94,9 @@ class TestGetLLMInstance:
 
     def test_sets_correct_costs_from_config(self, mock_all_clients):
         """Should set input/output costs from LLM_CONFIG."""
-        llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+        llm = get_llm_instance("anthropic", "claude-sonnet-5")
 
-        expected_config = LLM_CONFIG["anthropic"]["models"]["claude-sonnet-4-20250514"]
+        expected_config = LLM_CONFIG["anthropic"]["models"]["claude-sonnet-5"]
         assert llm.input_cost == expected_config["input_cost"]
         assert llm.output_cost == expected_config["output_cost"]
 
@@ -120,7 +120,7 @@ class TestGetLLMInstance:
         assert llm.supports_temperature_top_p is False
 
         # Model without flag (defaults to True)
-        llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+        llm = get_llm_instance("anthropic", "claude-opus-4-5-20251101")
         assert llm.supports_temperature_top_p is True
 
     def test_raises_for_unknown_provider(self):
@@ -343,4 +343,84 @@ class TestGatewayProviderIsOptIn:
             for provider, _ in hops:
                 assert provider != "majordomo", (
                     f"alias {name!r} would route to the gateway provider by default"
+                )
+
+
+class TestMaxTokensForwarding:
+    """Tests for the max_tokens config key reaching the provider instance."""
+
+    def test_loaded_from_config_for_anthropic(self, mock_all_clients):
+        llm = get_llm_instance("anthropic", "claude-sonnet-4-6")
+        assert llm.max_tokens == 128000
+
+    def test_older_models_get_their_lower_ceiling(self, mock_all_clients):
+        """The registry spans two ceilings on Anthropic; they must not be flattened."""
+        assert get_llm_instance("anthropic", "claude-opus-5").max_tokens == 128000
+        assert get_llm_instance("anthropic", "claude-haiku-4-5-20251001").max_tokens == 64000
+        assert get_llm_instance("anthropic", "claude-sonnet-4-5-20250929").max_tokens == 64000
+
+    def test_effort_profiles_inherit_the_sku_ceiling(self, mock_all_clients):
+        """The -medium/-deep profiles run thinking inside this budget."""
+        for key in ("claude-opus-4-8-fast", "claude-opus-4-8-medium", "claude-opus-4-8-deep"):
+            assert get_llm_instance("anthropic", key).max_tokens == 128000
+
+    def test_loaded_from_config_for_bedrock(self, mock_all_clients):
+        llm = get_llm_instance("bedrock", "deepseek.v3.2", region="us-east-1")
+        assert llm.max_tokens == 163840
+
+    def test_loaded_from_config_for_bedrock_mantle(self, mock_all_clients):
+        llm = get_llm_instance(
+            "bedrock_mantle", "anthropic.claude-haiku-4-5", region="us-east-1"
+        )
+        assert llm.max_tokens == 64000
+
+    def test_every_capped_provider_model_declares_one(self):
+        """A missing entry silently reverts that model to the library default."""
+        for provider in ("anthropic", "bedrock", "bedrock_mantle"):
+            models = LLM_CONFIG[provider]["models"]
+            missing = [m for m, attrs in models.items() if "max_tokens" not in attrs]
+            assert missing == [], f"{provider} models without max_tokens: {missing}"
+
+    def test_not_forwarded_to_providers_that_ignore_it(self, mock_all_clients):
+        """Providers that send no cap inherit the model default, not ours."""
+        assert get_llm_instance("openai", "gpt-4.1").max_tokens is None
+        assert get_llm_instance("gemini", "gemini-2.5-flash").max_tokens is None
+
+
+class TestClaude4FamilyDeprecation:
+    """The Claude 4 family 404s on the Messages API and was retired 2026-08-25."""
+
+    RETIRED = {
+        "claude-opus-4-1-20250805": "claude-opus-5",
+        "claude-opus-4-20250514": "claude-opus-5",
+        "claude-sonnet-4-20250514": "claude-sonnet-5",
+    }
+
+    def test_removed_from_the_models_block(self):
+        """The factory only consults deprecated_models when a model is absent."""
+        models = LLM_CONFIG["anthropic"]["models"]
+        assert [m for m in self.RETIRED if m in models] == []
+
+    @pytest.mark.parametrize("retired,replacement", sorted(RETIRED.items()))
+    def test_resolves_to_replacement(self, retired, replacement, mock_all_clients):
+        llm = get_llm_instance("anthropic", retired)
+        assert llm.model == replacement
+        assert llm.requested_model == retired
+        assert llm.deprecation_warning is not None
+        assert retired in llm.deprecation_warning
+
+    @pytest.mark.parametrize("retired", sorted(RETIRED))
+    def test_replacement_carries_its_own_max_tokens(self, retired, mock_all_clients):
+        """The replacement's ceiling applies, not the retired model's."""
+        assert get_llm_instance("anthropic", retired).max_tokens == 128000
+
+    def test_no_alias_still_points_at_a_retired_model(self):
+        """Alias validation resolves against the models block only, not
+        deprecated_models — a YAML alias naming a retired model raises
+        ConfigurationError at import and takes the whole package down with it."""
+        for name, target in get_aliases().items():
+            members = target if isinstance(target, list) else [target]
+            for _provider, model in members:
+                assert model not in self.RETIRED, (
+                    f"alias {name!r} still targets retired model {model!r}"
                 )

@@ -120,16 +120,16 @@ class TestRegisterAlias:
 
     def test_registers_single_provider(self, mock_all_clients):
         """Should register a single provider alias."""
-        register_alias("myalias", ("anthropic", "claude-sonnet-4-20250514"))
+        register_alias("myalias", ("anthropic", "claude-sonnet-5"))
 
         llm = get_llm_by_alias("myalias")
         assert isinstance(llm, Anthropic)
-        assert llm.model == "claude-sonnet-4-20250514"
+        assert llm.model == "claude-sonnet-5"
 
     def test_registers_cascade(self, mock_all_clients):
         """Should register a cascade alias."""
         register_alias("myfallback", [
-            ("anthropic", "claude-sonnet-4-20250514"),
+            ("anthropic", "claude-sonnet-5"),
             ("openai", "gpt-4.1"),
         ])
 
@@ -162,7 +162,7 @@ class TestRegisterAlias:
     def test_raises_for_cascade_with_one_provider(self):
         """Cascade must have at least 2 providers."""
         with pytest.raises(ConfigurationError) as exc_info:
-            register_alias("bad", [("anthropic", "claude-sonnet-4-20250514")])
+            register_alias("bad", [("anthropic", "claude-sonnet-5")])
 
         assert "at least 2" in str(exc_info.value)
 
@@ -221,11 +221,11 @@ class TestGetAliases:
 
     def test_includes_programmatic_aliases(self):
         """Should include aliases added via register_alias."""
-        register_alias("custom", ("anthropic", "claude-sonnet-4-20250514"))
+        register_alias("custom", ("anthropic", "claude-sonnet-5"))
 
         aliases = get_aliases()
         assert "custom" in aliases
-        assert aliases["custom"] == ("anthropic", "claude-sonnet-4-20250514")
+        assert aliases["custom"] == ("anthropic", "claude-sonnet-5")
 
     def test_returns_copy_not_reference(self):
         """Modifying the returned dict should not affect the registry."""
@@ -265,7 +265,7 @@ class TestAliasYamlLoading:
         target = aliases["resilient-sonnet"]
         assert isinstance(target, list)
         assert target == [
-            ("anthropic", "claude-sonnet-4-20250514"),
-            ("openai", "gpt-4.1"),
+            ("anthropic", "claude-sonnet-5"),
+            ("openai", "gpt-5.6-terra"),
             ("gemini", "gemini-2.5-pro"),
         ]

@@ -6,7 +6,7 @@ Log requests and bodies asynchronously for analytics and auditing.
 from majordomo_llm import get_llm_instance
 from majordomo_llm.logging import LoggingLLM, SqliteAdapter, FileStorageAdapter
 
-llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+llm = get_llm_instance("anthropic", "claude-sonnet-5")
 
 # Local dev: SQLite + local files
 db = await SqliteAdapter.create("llm_logs.db")

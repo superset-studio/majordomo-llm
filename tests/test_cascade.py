@@ -9,6 +9,7 @@ from majordomo_llm import LLMCascade
 from majordomo_llm.exceptions import (
     ProviderError,
     ResponseParsingError,
+    ResponseTruncatedError,
     StructuredOutputUnsupported,
 )
 
@@ -45,7 +46,7 @@ class TestLLMCascadeInit:
         """Should create LLM instances for all providers in list."""
         cascade = LLMCascade(
             [
-                ("anthropic", "claude-sonnet-4-20250514"),
+                ("anthropic", "claude-sonnet-5"),
                 ("openai", "gpt-4.1"),
             ]
         )
@@ -58,7 +59,7 @@ class TestLLMCascadeInit:
         """Should set provider name to 'cascade'."""
         cascade = LLMCascade(
             [
-                ("anthropic", "claude-sonnet-4-20250514"),
+                ("anthropic", "claude-sonnet-5"),
             ]
         )
 
@@ -68,12 +69,12 @@ class TestLLMCascadeInit:
         """Should use first provider's attributes for metadata."""
         cascade = LLMCascade(
             [
-                ("anthropic", "claude-sonnet-4-20250514"),
+                ("anthropic", "claude-sonnet-5"),
                 ("openai", "gpt-4.1"),
             ]
         )
 
-        assert cascade.model == "claude-sonnet-4-20250514"
+        assert cascade.model == "claude-sonnet-5"
         assert cascade.input_cost == 3.00
         assert cascade.output_cost == 15.00
 
@@ -93,7 +94,7 @@ class TestLLMCascadeGetResponse:
         """Create LLMCascade with mocked providers."""
         return LLMCascade(
             [
-                ("anthropic", "claude-sonnet-4-20250514"),
+                ("anthropic", "claude-sonnet-5"),
                 ("openai", "gpt-4.1"),
                 ("gemini", "gemini-2.5-flash"),
             ]
@@ -207,6 +208,7 @@ class TestLLMCascadeGetResponse:
             temperature=0.7,
             top_p=0.9,
             extra_headers=None,
+            max_tokens=None,
         )
 
 
@@ -218,7 +220,7 @@ class TestLLMCascadeGetJSONResponse:
         """Create LLMCascade with mocked providers."""
         return LLMCascade(
             [
-                ("anthropic", "claude-sonnet-4-20250514"),
+                ("anthropic", "claude-sonnet-5"),
                 ("openai", "gpt-4.1"),
             ]
         )
@@ -299,7 +301,7 @@ class TestLLMCascadeStructuredResponse:
         """Create LLMCascade with mocked providers."""
         return LLMCascade(
             [
-                ("anthropic", "claude-sonnet-4-20250514"),
+                ("anthropic", "claude-sonnet-5"),
                 ("openai", "gpt-4.1"),
             ]
         )
@@ -379,7 +381,7 @@ class TestLLMCascadeJSONSchemaResponse:
         """Create LLMCascade with mocked providers."""
         return LLMCascade(
             [
-                ("anthropic", "claude-sonnet-4-20250514"),
+                ("anthropic", "claude-sonnet-5"),
                 ("openai", "gpt-4.1"),
             ]
         )
@@ -448,7 +450,7 @@ class TestLLMCascadeGetResponseStream:
         """Create LLMCascade with mocked providers."""
         return LLMCascade(
             [
-                ("anthropic", "claude-sonnet-4-20250514"),
+                ("anthropic", "claude-sonnet-5"),
                 ("openai", "gpt-4.1"),
                 ("gemini", "gemini-2.5-flash"),
             ]
@@ -519,7 +521,7 @@ class TestLLMCascadeHooks:
         pipeline = HookPipeline([CountingHook()])
         return LLMCascade(
             [
-                ("anthropic", "claude-sonnet-4-20250514"),
+                ("anthropic", "claude-sonnet-5"),
                 ("openai", "gpt-4.1"),
             ],
             hook_pipeline=pipeline,
@@ -565,7 +567,7 @@ class TestLLMCascadeHooks:
 
         cascade = LLMCascade(
             [
-                ("anthropic", "claude-sonnet-4-20250514"),
+                ("anthropic", "claude-sonnet-5"),
                 ("openai", "gpt-4.1"),
             ],
             hook_pipeline=HookPipeline([Blocker()]),
@@ -578,3 +580,51 @@ class TestLLMCascadeHooks:
 
         cascade.llms[0].get_response.assert_not_called()
         cascade.llms[1].get_response.assert_not_called()
+
+
+class TestLLMCascadeTruncation:
+    """A truncated response is a configuration problem, not a provider outage."""
+
+    @pytest.fixture
+    def cascade(self, mock_all_clients):
+        return LLMCascade(
+            [
+                ("anthropic", "claude-sonnet-5"),
+                ("openai", "gpt-4.1"),
+            ]
+        )
+
+    async def test_does_not_fail_over_on_truncation(self, cascade):
+        """The next provider would truncate identically, so failing over is waste."""
+        cascade.llms[0].get_response = AsyncMock(
+            side_effect=ResponseTruncatedError(
+                max_tokens=1024, output_tokens=1024, partial_content="", provider="anthropic"
+            )
+        )
+        cascade.llms[1].get_response = AsyncMock()
+
+        with pytest.raises(ResponseTruncatedError):
+            await cascade.get_response("Write six sections")
+
+        cascade.llms[1].get_response.assert_not_called()
+
+    async def test_still_fails_over_on_provider_error(self, cascade):
+        """Failover behavior for genuine provider failures is unchanged."""
+        response = MagicMock()
+        response.content = "from the fallback"
+        cascade.llms[0].get_response = AsyncMock(
+            side_effect=ProviderError("down", provider="anthropic")
+        )
+        cascade.llms[1].get_response = AsyncMock(return_value=response)
+
+        result = await cascade.get_response("Test prompt")
+
+        assert result.content == "from the fallback"
+
+    async def test_forwards_max_tokens_to_the_member(self, cascade):
+        """A per-request cap must reach whichever member handles the call."""
+        cascade.llms[0].get_response = AsyncMock(return_value=MagicMock())
+
+        await cascade.get_response("Test prompt", max_tokens=4096)
+
+        assert cascade.llms[0].get_response.call_args.kwargs["max_tokens"] == 4096

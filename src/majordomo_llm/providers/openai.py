@@ -120,6 +120,7 @@ class OpenAI(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Get a plain text response from OpenAI."""
         return await self._get_response(
@@ -181,6 +182,7 @@ class OpenAI(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMStreamResponse:
         """Get a streaming text response from OpenAI."""
         state = _StreamState()
@@ -233,6 +235,7 @@ class OpenAI(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """OpenAI-specific implementation using structured outputs with JSON Schema."""
         start_time = time.time()

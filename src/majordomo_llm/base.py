@@ -18,10 +18,21 @@ from majordomo_llm.exceptions import (
     ConfigurationError,
     EmptyStructuredResponseError,
     ResponseParsingError,
+    ResponseTruncatedError,
     StructuredOutputUnsupported,
 )
 from majordomo_llm.hooks.pipeline import HookPipeline
 from majordomo_llm.retry import retry_provider_call
+
+#: Output cap applied when neither the caller nor ``llm_config.yaml`` sets one,
+#: for providers that require ``max_tokens`` on every request (Anthropic,
+#: Bedrock). Sized to keep a non-streaming response inside the provider SDKs'
+#: default HTTP timeout — larger ceilings need the streaming path.
+DEFAULT_MAX_TOKENS = 16_000
+
+#: Output cap for streaming requests, where the SDK read timeout does not
+#: apply between chunks, so the model gets substantially more room.
+DEFAULT_STREAM_MAX_TOKENS = 64_000
 
 
 def _hash_api_key(api_key: str) -> str:
@@ -468,12 +479,16 @@ class LLMResponse(Usage):
             ``None`` for direct provider calls.
         routed_model: When routed through the Majordomo gateway, the backend's
             native model identifier the call actually ran on; ``None`` otherwise.
+        stop_reason: Why the provider stopped generating, verbatim from the
+            provider (e.g. ``"end_turn"``, ``"tool_use"``, ``"max_tokens"``).
+            ``None`` for providers that do not report one.
     """
 
     content: str
     deprecation_warning: str | None = None
     routed_provider: str | None = None
     routed_model: str | None = None
+    stop_reason: str | None = None
 
 
 @dataclass
@@ -528,6 +543,10 @@ class _StreamState:
     #: streaming path reports the same identity as the non-streaming one.
     routed_provider: str | None = None
     routed_model: str | None = None
+    #: Why the provider stopped generating, captured from the terminal stream
+    #: event. Mirrors ``LLMResponse.stop_reason`` so the streaming path reports
+    #: the same signal as the non-streaming one.
+    stop_reason: str | None = None
 
 
 class LLMStreamResponse:
@@ -621,6 +640,11 @@ class LLMStreamResponse:
         """Routed backend's native model id, or None on a direct provider call."""
         return self._state.routed_model
 
+    @property
+    def stop_reason(self) -> str | None:
+        """Why generation stopped, available once the stream is consumed."""
+        return self._state.stop_reason
+
     async def collect(self) -> LLMResponse:
         """Consume the entire stream and return an :class:`LLMResponse`."""
         chunks: list[str] = []
@@ -640,6 +664,7 @@ class LLMStreamResponse:
             deprecation_warning=self._llm.deprecation_warning,
             routed_provider=self._state.routed_provider,
             routed_model=self._state.routed_model,
+            stop_reason=self._state.stop_reason,
         )
 
 
@@ -655,7 +680,7 @@ class LLM(ABC):
 
     Attributes:
         provider: The LLM provider name (e.g., "openai", "anthropic", "gemini").
-        model: The specific model identifier (e.g., "gpt-4o", "claude-sonnet-4-20250514").
+        model: The specific model identifier (e.g., "gpt-4o", "claude-sonnet-5").
         input_cost: Cost per million input tokens in USD.
         output_cost: Cost per million output tokens in USD.
         supports_temperature_top_p: Whether the model supports temperature/top_p params.
@@ -665,7 +690,7 @@ class LLM(ABC):
 
     Example:
         >>> from majordomo_llm import get_llm_instance
-        >>> llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+        >>> llm = get_llm_instance("anthropic", "claude-sonnet-5")
         >>> response = await llm.get_response("What is 2+2?")
         >>> print(response.content)
         4
@@ -701,6 +726,7 @@ class LLM(ABC):
         cached_input_cost: float | None = None,
         cache_write_cost: float | None = None,
         use_prompt_caching: bool = True,
+        max_tokens: int | None = None,
     ) -> None:
         """Initialize the LLM instance.
 
@@ -727,6 +753,10 @@ class LLM(ABC):
             use_prompt_caching: Whether to request prompt caching on providers
                 that support explicit cache breakpoints (Anthropic). Defaults to
                 ``True``. Ignored by providers without explicit cache control.
+            max_tokens: Default output cap for this model, from the ``max_tokens``
+                key in ``llm_config.yaml``. ``None`` falls back to
+                :data:`DEFAULT_MAX_TOKENS` / :data:`DEFAULT_STREAM_MAX_TOKENS`.
+                Only providers whose API requires an output cap send it.
         """
         self.provider = provider
         self.model = model
@@ -735,6 +765,7 @@ class LLM(ABC):
         self.cached_input_cost = cached_input_cost
         self.cache_write_cost = cache_write_cost
         self.use_prompt_caching = use_prompt_caching
+        self.max_tokens = max_tokens
         self.supports_temperature_top_p = supports_temperature_top_p
         self.use_web_search = use_web_search
         self.api_key_hash = _hash_api_key(api_key) if api_key else None
@@ -749,9 +780,61 @@ class LLM(ABC):
         """Get the fully qualified model name.
 
         Returns:
-            Model name in the format "provider:model" (e.g., "anthropic:claude-sonnet-4-20250514").
+            Model name in the format "provider:model" (e.g., "anthropic:claude-sonnet-5").
         """
         return f"{self.provider}:{self.model}"
+
+    def _resolve_max_tokens(self, override: int | None, *, streaming: bool = False) -> int:
+        """Resolve the output cap to send on a request.
+
+        Precedence: an explicit per-request ``override``, then this model's
+        ``max_tokens`` from ``llm_config.yaml``, then the library default. The
+        streaming default is larger because the SDK read timeout does not apply
+        between chunks.
+
+        This is the single place the number is decided; providers call it rather
+        than choosing a value of their own.
+
+        Args:
+            override: Per-request ``max_tokens``, or None if the caller passed none.
+            streaming: Whether the request uses the streaming path.
+
+        Returns:
+            The output cap to send.
+
+        Raises:
+            ValueError: If ``override`` is not a positive integer.
+        """
+        if override is not None:
+            if override < 1:
+                raise ValueError(f"max_tokens must be a positive integer, got {override}")
+            return override
+        if self.max_tokens is not None:
+            return self.max_tokens
+        return DEFAULT_STREAM_MAX_TOKENS if streaming else DEFAULT_MAX_TOKENS
+
+    def _check_truncation(
+        self, stop_reason: str | None, max_tokens: int, output_tokens: int, content: str
+    ) -> None:
+        """Raise when the provider reports the response was cut off by the cap.
+
+        Args:
+            stop_reason: The provider's stop reason, verbatim.
+            max_tokens: The cap that was sent on the request.
+            output_tokens: Tokens the model emitted.
+            content: Whatever content arrived before the cut.
+
+        Raises:
+            ResponseTruncatedError: If ``stop_reason`` indicates truncation.
+        """
+        if stop_reason != "max_tokens":
+            return
+        raise ResponseTruncatedError(
+            max_tokens=max_tokens,
+            output_tokens=output_tokens,
+            partial_content=content,
+            provider=self.provider,
+        )
 
     def _sampling_params(
         self, temperature: float | None, top_p: float | None
@@ -856,6 +939,7 @@ class LLM(ABC):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Provider-specific implementation of ``get_response``.
 
@@ -872,6 +956,7 @@ class LLM(ABC):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMStreamResponse:
         """Provider-specific implementation of ``get_response_stream``."""
         raise NotImplementedError()
@@ -884,6 +969,7 @@ class LLM(ABC):
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
         *,
+        max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Get a plain text response from the LLM.
@@ -897,6 +983,9 @@ class LLM(ABC):
             temperature: Sampling temperature (0.0-2.0). Lower is more deterministic.
             top_p: Nucleus sampling parameter (0.0-1.0).
             extra_headers: Optional per-request headers merged with default_headers.
+            max_tokens: Optional output cap for this request, overriding the
+                model's ``max_tokens`` config value. Only providers whose API
+                requires an output cap (Anthropic, Bedrock) act on it.
             caller_metadata: Free-form dict forwarded to every hook via
                 :class:`HookContext`. Unused when no pipeline is configured.
 
@@ -905,11 +994,17 @@ class LLM(ABC):
 
         Raises:
             HookBlocked: If a hook in the pipeline blocks the call.
+            ResponseTruncatedError: If the response hit the output cap.
             Exception: If the API request fails after retries.
         """
         async def impl(prompt: str) -> LLMResponse:
             return await self._get_response_impl(
-                prompt, system_prompt, temperature, top_p, extra_headers=extra_headers
+                prompt,
+                system_prompt,
+                temperature,
+                top_p,
+                extra_headers=extra_headers,
+                max_tokens=max_tokens,
             )
 
         return await self._run_hooks_returning_response(
@@ -924,16 +1019,25 @@ class LLM(ABC):
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
         *,
+        max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
     ) -> LLMStreamResponse:
         """Get a streaming text response from the LLM.
 
         Hooks do not run on streaming responses; ``caller_metadata`` is
         accepted for API symmetry and ignored.
+
+        ``max_tokens`` overrides the model's configured output cap for this
+        request; streaming defaults to :data:`DEFAULT_STREAM_MAX_TOKENS`.
         """
         del caller_metadata
         return await self._get_response_stream_impl(
-            user_prompt, system_prompt, temperature, top_p, extra_headers=extra_headers
+            user_prompt,
+            system_prompt,
+            temperature,
+            top_p,
+            extra_headers=extra_headers,
+            max_tokens=max_tokens,
         )
 
     async def _run_hooks_returning_response(
@@ -974,6 +1078,9 @@ class LLM(ABC):
             total_cost=captured.total_cost,
             response_time=captured.response_time,
             deprecation_warning=captured.deprecation_warning,
+            routed_provider=captured.routed_provider,
+            routed_model=captured.routed_model,
+            stop_reason=captured.stop_reason,
         )
 
     async def get_json_response(
@@ -984,6 +1091,7 @@ class LLM(ABC):
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
         *,
+        max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
     ) -> LLMJSONResponse:
         """Get a JSON response from the LLM.
@@ -1011,6 +1119,7 @@ class LLM(ABC):
             temperature,
             top_p,
             extra_headers=extra_headers,
+            max_tokens=max_tokens,
             caller_metadata=caller_metadata,
         )
         # Strip markdown code fencing if present
@@ -1043,6 +1152,7 @@ class LLM(ABC):
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
         *,
+        max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
     ) -> LLMStructuredResponse:
         """Get a structured response validated against a Pydantic model.
@@ -1087,6 +1197,7 @@ class LLM(ABC):
             temperature=temperature,
             top_p=top_p,
             extra_headers=extra_headers,
+            max_tokens=max_tokens,
             caller_metadata=caller_metadata,
         )
         parsed_content = response_model.model_validate_json(response.content)
@@ -1114,6 +1225,7 @@ class LLM(ABC):
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
         *,
+        max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -1153,6 +1265,7 @@ class LLM(ABC):
                 temperature=temperature,
                 top_p=top_p,
                 extra_headers=extra_headers,
+                max_tokens=max_tokens,
             )
 
         return await self._run_hooks_returning_response(
@@ -1170,6 +1283,7 @@ class LLM(ABC):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Retry-wrapped delegate to the provider override.
 
@@ -1184,6 +1298,7 @@ class LLM(ABC):
             temperature=temperature,
             top_p=top_p,
             extra_headers=extra_headers,
+            max_tokens=max_tokens,
         )
 
     async def _get_json_schema_response(
@@ -1196,6 +1311,7 @@ class LLM(ABC):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Provider-specific implementation for raw JSON-schema structured responses."""
         raise StructuredOutputUnsupported(self.provider, self.model)
@@ -1208,6 +1324,7 @@ class LLM(ABC):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMJSONResponse:
         """Provider-specific implementation for structured responses.
 
@@ -1233,6 +1350,7 @@ class LLM(ABC):
             temperature=temperature,
             top_p=top_p,
             extra_headers=extra_headers,
+            max_tokens=max_tokens,
         )
         return LLMJSONResponse(
             content=json.loads(response.content),

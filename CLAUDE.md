@@ -37,7 +37,7 @@ Unified async interface for LLM providers (OpenAI, Anthropic, Gemini, DeepSeek, 
 
 - **`factory.py`**: `get_llm_instance(provider, model)` factory function. Loads model configs from `llm_config.yaml` (costs per million tokens, feature flags like `supports_temperature_top_p`).
 
-- **`llm_config.yaml`**: Model configuration (costs, feature flags). Add new models here; the factory will pick them up automatically.
+- **`llm_config.yaml`**: Model configuration (costs, feature flags). Add new models here; the factory will pick them up automatically. `max_tokens` is the per-model output cap, and is only read by the three providers whose API requires one (`anthropic`, `bedrock`, `bedrock_mantle`); everywhere else the model's own default applies and the key is not forwarded. Verify a new value with `scripts/check_max_tokens.py`, which reads each vendor's real ceiling out of its rejection of an over-large cap.
 
 - **`cascade.py`**: `LLMCascade` wraps multiple providers for automatic failover. Tries providers in order; catches `ProviderError` and falls back to next.
 
@@ -55,7 +55,7 @@ Unified async interface for LLM providers (OpenAI, Anthropic, Gemini, DeepSeek, 
 
 - **`examples/`**: Demo app showing multi-provider usage with logging. Run with `uv run python examples/demo.py`
 
-- **`exceptions.py`**: Exception hierarchy: `MajordomoError` (base) → `ConfigurationError`, `ProviderError`, `ResponseParsingError`
+- **`exceptions.py`**: Exception hierarchy: `MajordomoError` (base) → `ConfigurationError`, `ProviderError`, `ResponseParsingError`, `ResponseTruncatedError`
 
 ### Key Patterns
 
@@ -64,6 +64,8 @@ Unified async interface for LLM providers (OpenAI, Anthropic, Gemini, DeepSeek, 
 - Costs calculated per million tokens using `TOKENS_PER_MILLION = 1_000_000`
 - Pydantic models for structured output schemas via `model_json_schema()`
 - Provider errors are wrapped in `ProviderError` with `original_error` attribute
+- Output caps resolve in one place, `LLM._resolve_max_tokens()`: per-request `max_tokens` → the model's config value → `DEFAULT_MAX_TOKENS` (16000) / `DEFAULT_STREAM_MAX_TOKENS` (64000). Providers call it rather than choosing a literal
+- Truncation raises `ResponseTruncatedError` via `LLM._check_truncation()`. It subclasses `MajordomoError` rather than `ProviderError` specifically so it is neither retried by `retry_provider_call` nor failed over by `LLMCascade` — both would repeat the same call against the same ceiling. On structured paths the check runs before content extraction, so the cause is reported instead of a downstream parse error
 - API key hashing: `_hash_api_key()` uses SHA256 truncated to 16 hex chars for safe logging
 - All providers accept `api_key_alias` for human-readable key identification in logs
 

@@ -26,7 +26,7 @@ class LLMCascade(LLM):
 
     Example:
         >>> cascade = LLMCascade([
-        ...     ("anthropic", "claude-sonnet-4-20250514"),  # Primary
+        ...     ("anthropic", "claude-sonnet-5"),  # Primary
         ...     ("openai", "gpt-4o"),                       # First fallback
         ...     ("gemini", "gemini-2.5-flash"),             # Last resort
         ... ])
@@ -91,6 +91,7 @@ class LLMCascade(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Dispatch to the first child provider that succeeds."""
         return cast(
@@ -102,6 +103,7 @@ class LLMCascade(LLM):
                 temperature=temperature,
                 top_p=top_p,
                 extra_headers=extra_headers,
+                max_tokens=max_tokens,
             ),
         )
 
@@ -112,6 +114,7 @@ class LLMCascade(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMStreamResponse:
         """Dispatch streaming to the first child provider that succeeds."""
         return cast(
@@ -123,6 +126,7 @@ class LLMCascade(LLM):
                 temperature=temperature,
                 top_p=top_p,
                 extra_headers=extra_headers,
+                max_tokens=max_tokens,
             ),
         )
 
@@ -136,6 +140,7 @@ class LLMCascade(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Cascade overrides the retried wrapper to skip outer retries.
 
@@ -157,6 +162,7 @@ class LLMCascade(LLM):
                 temperature=temperature,
                 top_p=top_p,
                 extra_headers=extra_headers,
+                max_tokens=max_tokens,
                 failover_exceptions=(ProviderError, ResponseParsingError),
             ),
         )
@@ -171,6 +177,7 @@ class LLMCascade(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Unused on the cascade — ``_get_json_schema_response_retried`` dispatches directly."""
         raise NotImplementedError(

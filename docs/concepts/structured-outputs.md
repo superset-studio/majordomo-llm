@@ -37,7 +37,7 @@ class ExtractedData(BaseModel):
     keywords: list[str] = Field(description="Key topics")
 
 # Same code works with any provider
-llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+llm = get_llm_instance("anthropic", "claude-sonnet-5")
 # llm = get_llm_instance("openai", "gpt-4.1")
 # llm = get_llm_instance("gemini", "gemini-2.5-flash")
 

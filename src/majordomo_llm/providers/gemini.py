@@ -143,6 +143,7 @@ class Gemini(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Get a plain text response from Gemini."""
         return await self._get_response(
@@ -207,6 +208,7 @@ class Gemini(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMStreamResponse:
         """Get a streaming text response from Gemini."""
         state = _StreamState()
@@ -261,6 +263,7 @@ class Gemini(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Gemini-specific implementation using response schema for structured outputs."""
         if self.use_web_search and not self._supports_search_with_structured_output():

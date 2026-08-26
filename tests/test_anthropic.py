@@ -6,11 +6,16 @@ import pytest
 from pydantic import BaseModel
 from tenacity import RetryError
 
-from majordomo_llm.base import TOKENS_PER_MILLION
+from majordomo_llm.base import (
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_STREAM_MAX_TOKENS,
+    TOKENS_PER_MILLION,
+)
 from majordomo_llm.exceptions import (
     ConfigurationError,
     EmptyStructuredResponseError,
     ResponseParsingError,
+    ResponseTruncatedError,
 )
 from majordomo_llm.providers import Anthropic
 
@@ -77,7 +82,7 @@ class TestAnthropicGetResponse:
         """Create Anthropic instance with mocked client."""
         with patch("majordomo_llm.providers.anthropic.anthropic.AsyncAnthropic"):
             llm = Anthropic(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-5",
                 input_cost=3.0,
                 output_cost=15.0,
                 api_key="test-key",
@@ -156,7 +161,7 @@ class TestAnthropicStructuredResponse:
         """Anthropic instance without native structured outputs (forced-tool fallback)."""
         with patch("majordomo_llm.providers.anthropic.anthropic.AsyncAnthropic"):
             llm = Anthropic(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-5",
                 input_cost=3.0,
                 output_cost=15.0,
                 api_key="test-key",
@@ -352,7 +357,7 @@ class TestAnthropicReasoningEffort:
         assert output_config["format"]["type"] == "json_schema"
 
     async def test_effort_applied_to_plain_response(self):
-        llm = self._llm("low", native=False, model="claude-sonnet-4-20250514")
+        llm = self._llm("low", native=False, model="claude-sonnet-5")
         llm.client.messages.create = AsyncMock(return_value=_text_response("hi"))
 
         await llm.get_response("hello")
@@ -360,7 +365,7 @@ class TestAnthropicReasoningEffort:
         assert llm.client.messages.create.call_args.kwargs["output_config"] == {"effort": "low"}
 
     async def test_no_effort_omits_output_config_on_plain_response(self):
-        llm = self._llm(None, native=False, model="claude-sonnet-4-20250514")
+        llm = self._llm(None, native=False, model="claude-sonnet-5")
         llm.client.messages.create = AsyncMock(return_value=_text_response("hi"))
 
         await llm.get_response("hello")
@@ -446,7 +451,7 @@ class TestAnthropicInit:
         with patch.dict("os.environ", {}, clear=True):
             with pytest.raises(ConfigurationError) as exc_info:
                 Anthropic(
-                    model="claude-sonnet-4-20250514",
+                    model="claude-sonnet-5",
                     input_cost=3.0,
                     output_cost=15.0,
                 )
@@ -457,7 +462,7 @@ class TestAnthropicInit:
         """Should set provider to 'anthropic'."""
         with patch("majordomo_llm.providers.anthropic.anthropic.AsyncAnthropic"):
             llm = Anthropic(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-5",
                 input_cost=3.0,
                 output_cost=15.0,
                 api_key="test-key",
@@ -469,13 +474,13 @@ class TestAnthropicInit:
         """Should store model name and cost configuration."""
         with patch("majordomo_llm.providers.anthropic.anthropic.AsyncAnthropic"):
             llm = Anthropic(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-5",
                 input_cost=3.0,
                 output_cost=15.0,
                 api_key="test-key",
             )
 
-            assert llm.model == "claude-sonnet-4-20250514"
+            assert llm.model == "claude-sonnet-5"
             assert llm.input_cost == 3.0
             assert llm.output_cost == 15.0
 
@@ -483,7 +488,7 @@ class TestAnthropicInit:
         """Should have web search disabled by default."""
         with patch("majordomo_llm.providers.anthropic.anthropic.AsyncAnthropic"):
             llm = Anthropic(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-5",
                 input_cost=3.0,
                 output_cost=15.0,
                 api_key="test-key",
@@ -513,7 +518,7 @@ class TestAnthropicGetResponseStream:
         """Create Anthropic instance with mocked client."""
         with patch("majordomo_llm.providers.anthropic.anthropic.AsyncAnthropic"):
             llm = Anthropic(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-5",
                 input_cost=3.0,
                 output_cost=15.0,
                 api_key="test-key",
@@ -634,7 +639,7 @@ class TestAnthropicPromptCaching:
     def _make_llm(self, **kwargs):
         with patch("majordomo_llm.providers.anthropic.anthropic.AsyncAnthropic"):
             return Anthropic(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-5",
                 input_cost=3.0,
                 output_cost=15.0,
                 api_key="test-key",
@@ -675,3 +680,194 @@ class TestAnthropicPromptCaching:
         assert response.cache_creation_tokens == 200
         expected_input = (25 * 3.0 + 100 * 0.3 + 200 * 3.75) / TOKENS_PER_MILLION
         assert response.input_cost == pytest.approx(expected_input)
+
+
+class TestAnthropicMaxTokens:
+    """Tests for the configurable output cap and truncation detection."""
+
+    @pytest.fixture
+    def anthropic_llm(self):
+        """Anthropic instance with no configured cap (library defaults apply)."""
+        with patch("majordomo_llm.providers.anthropic.anthropic.AsyncAnthropic"):
+            return Anthropic(
+                model="claude-sonnet-5",
+                input_cost=3.0,
+                output_cost=15.0,
+                api_key="test-key",
+            )
+
+    @pytest.fixture
+    def capped_llm(self):
+        """Anthropic instance with a cap supplied the way llm_config.yaml does."""
+        with patch("majordomo_llm.providers.anthropic.anthropic.AsyncAnthropic"):
+            return Anthropic(
+                model="claude-sonnet-5",
+                input_cost=3.0,
+                output_cost=15.0,
+                api_key="test-key",
+                max_tokens=64000,
+            )
+
+    async def test_default_cap_on_plain_text(self, anthropic_llm, mock_anthropic_text_response):
+        """Should send DEFAULT_MAX_TOKENS, not the old hardcoded 1024."""
+        anthropic_llm.client.messages.create = AsyncMock(return_value=mock_anthropic_text_response)
+
+        await anthropic_llm.get_response("Test prompt")
+
+        call_kwargs = anthropic_llm.client.messages.create.call_args.kwargs
+        assert call_kwargs["max_tokens"] == DEFAULT_MAX_TOKENS
+
+    async def test_default_cap_on_streaming(self, anthropic_llm, mock_anthropic_stream_events):
+        """Streaming should get the larger default, since no HTTP read timeout applies."""
+        anthropic_llm.client.messages.create = AsyncMock(return_value=mock_anthropic_stream_events)
+
+        await anthropic_llm.get_response_stream("Hello")
+
+        call_kwargs = anthropic_llm.client.messages.create.call_args.kwargs
+        assert call_kwargs["max_tokens"] == DEFAULT_STREAM_MAX_TOKENS
+
+    async def test_config_cap_overrides_default(self, capped_llm, mock_anthropic_text_response):
+        """A model's configured max_tokens should win over the library default."""
+        capped_llm.client.messages.create = AsyncMock(return_value=mock_anthropic_text_response)
+
+        await capped_llm.get_response("Test prompt")
+
+        assert capped_llm.client.messages.create.call_args.kwargs["max_tokens"] == 64000
+
+    async def test_config_cap_applies_to_streaming(
+        self, capped_llm, mock_anthropic_stream_events
+    ):
+        """A configured cap replaces the streaming default too."""
+        capped_llm.client.messages.create = AsyncMock(return_value=mock_anthropic_stream_events)
+
+        await capped_llm.get_response_stream("Hello")
+
+        assert capped_llm.client.messages.create.call_args.kwargs["max_tokens"] == 64000
+
+    async def test_per_request_cap_overrides_config(
+        self, capped_llm, mock_anthropic_text_response
+    ):
+        """A per-request max_tokens should win over the configured value."""
+        capped_llm.client.messages.create = AsyncMock(return_value=mock_anthropic_text_response)
+
+        await capped_llm.get_response("Test prompt", max_tokens=2048)
+
+        assert capped_llm.client.messages.create.call_args.kwargs["max_tokens"] == 2048
+
+    async def test_structured_path_uses_resolved_cap(self, capped_llm):
+        """Structured output should use the same resolved cap, not a separate literal."""
+        capped_llm.client.messages.create = AsyncMock(
+            return_value=_tool_use_response(
+                "CountryInfo", {"name": "France", "capital": "Paris", "population": 1}
+            )
+        )
+
+        await capped_llm.get_structured_json_response(
+            response_model=CountryInfo, user_prompt="Tell me about France"
+        )
+
+        assert capped_llm.client.messages.create.call_args.kwargs["max_tokens"] == 64000
+
+    async def test_records_stop_reason(self, anthropic_llm, mock_anthropic_text_response):
+        """A normal response should carry the provider's stop reason."""
+        anthropic_llm.client.messages.create = AsyncMock(return_value=mock_anthropic_text_response)
+
+        response = await anthropic_llm.get_response("Test prompt")
+
+        assert response.stop_reason == "end_turn"
+
+    async def test_raises_when_truncated_before_any_text(
+        self, anthropic_llm, mock_anthropic_truncated_response
+    ):
+        """The reported failure: empty content must raise, not return silently."""
+        anthropic_llm.client.messages.create = AsyncMock(
+            return_value=mock_anthropic_truncated_response
+        )
+
+        with pytest.raises(ResponseTruncatedError) as exc_info:
+            await anthropic_llm.get_response("Write six sections")
+
+        assert exc_info.value.max_tokens == DEFAULT_MAX_TOKENS
+        assert exc_info.value.output_tokens == 1024
+        assert exc_info.value.partial_content == ""
+
+    async def test_raises_when_truncated_with_partial_content(
+        self, anthropic_llm, mock_anthropic_partially_truncated_response
+    ):
+        """Partial output is still corrupt output; the partial text is preserved."""
+        anthropic_llm.client.messages.create = AsyncMock(
+            return_value=mock_anthropic_partially_truncated_response
+        )
+
+        with pytest.raises(ResponseTruncatedError) as exc_info:
+            await anthropic_llm.get_response("Write six sections")
+
+        assert exc_info.value.partial_content == "Section one is about"
+
+    async def test_error_message_names_the_remedy(
+        self, anthropic_llm, mock_anthropic_truncated_response
+    ):
+        """The message should point at the knob, since that is the whole fix."""
+        anthropic_llm.client.messages.create = AsyncMock(
+            return_value=mock_anthropic_truncated_response
+        )
+
+        with pytest.raises(ResponseTruncatedError, match="max_tokens"):
+            await anthropic_llm.get_response("Write six sections")
+
+    async def test_truncation_is_not_retried(
+        self, anthropic_llm, mock_anthropic_truncated_response
+    ):
+        """Re-sampling would spend the same budget on the same ceiling."""
+        create = AsyncMock(return_value=mock_anthropic_truncated_response)
+        anthropic_llm.client.messages.create = create
+
+        with pytest.raises(ResponseTruncatedError):
+            await anthropic_llm.get_response("Write six sections")
+
+        assert create.await_count == 1
+
+    async def test_streaming_raises_after_yielding_chunks(
+        self, anthropic_llm, mock_anthropic_truncated_stream_events
+    ):
+        """A truncated stream should fail like a truncated non-streaming call."""
+        anthropic_llm.client.messages.create = AsyncMock(
+            return_value=mock_anthropic_truncated_stream_events
+        )
+
+        stream = await anthropic_llm.get_response_stream("Write six sections")
+        chunks = []
+        with pytest.raises(ResponseTruncatedError):
+            async for chunk in stream:
+                chunks.append(chunk)
+
+        assert chunks == ["Section one is about"]
+
+    async def test_streaming_records_stop_reason(
+        self, anthropic_llm, mock_anthropic_stream_events
+    ):
+        """A clean stream should expose its stop reason through collect()."""
+        anthropic_llm.client.messages.create = AsyncMock(return_value=mock_anthropic_stream_events)
+
+        stream = await anthropic_llm.get_response_stream("Hello")
+        response = await stream.collect()
+
+        assert stream.stop_reason == "end_turn"
+        assert response.stop_reason == "end_turn"
+
+    async def test_structured_truncation_raises_before_parsing(self, anthropic_llm):
+        """A cut-off structured response should report the cause, not a parse error."""
+        truncated = _tool_use_response("CountryInfo", {}, stop_reason="max_tokens")
+        anthropic_llm.client.messages.create = AsyncMock(return_value=truncated)
+
+        with pytest.raises(ResponseTruncatedError):
+            await anthropic_llm.get_structured_json_response(
+                response_model=CountryInfo, user_prompt="Tell me about France"
+            )
+
+    async def test_rejects_non_positive_cap(self, anthropic_llm, mock_anthropic_text_response):
+        """A zero or negative cap is a caller bug, not something to send upstream."""
+        anthropic_llm.client.messages.create = AsyncMock(return_value=mock_anthropic_text_response)
+
+        with pytest.raises(ValueError, match="positive integer"):
+            await anthropic_llm.get_response("Test prompt", max_tokens=0)

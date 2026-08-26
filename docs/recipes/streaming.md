@@ -10,7 +10,7 @@ import time
 from majordomo_llm import get_llm_instance
 
 async def main():
-    llm = get_llm_instance("anthropic", "claude-sonnet-4-20250514")
+    llm = get_llm_instance("anthropic", "claude-sonnet-5")
 
     stream = await llm.get_response_stream(
         user_prompt="Explain why the sky is blue.",
@@ -61,7 +61,7 @@ Streaming works with `LLMCascade`. If the primary provider fails to start the st
 from majordomo_llm import LLMCascade
 
 cascade = LLMCascade([
-    ("anthropic", "claude-sonnet-4-20250514"),
+    ("anthropic", "claude-sonnet-5"),
     ("openai", "gpt-4.1"),
     ("gemini", "gemini-2.5-flash"),
 ])
