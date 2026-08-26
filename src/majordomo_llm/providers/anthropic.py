@@ -35,6 +35,13 @@ logger = logging.getLogger(__name__)
 #: Valid ``output_config.effort`` levels (Claude 4.7+/5 generation).
 _EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
+#: The Anthropic SDK refuses a non-streaming request whose ``max_tokens`` implies
+#: more than its 10-minute timeout, computed as ``3600 * max_tokens / 128_000``.
+#: That puts the hard limit at 21_333. We check it ourselves so the failure names
+#: our parameter and the remedy, instead of surfacing the SDK's message from
+#: several frames down inside ``messages.create``.
+MAX_NONSTREAMING_TOKENS = 21_333
+
 #: Valid ``thinking.type`` modes. ``adaptive`` is the on-mode for the 4.6+/5
 #: generation (Claude decides depth); ``disabled`` turns thinking off (rejected
 #: on Fable 5, where thinking is always on). Legacy ``enabled`` + ``budget_tokens``
@@ -170,6 +177,27 @@ class Anthropic(LLM):
             default_headers=self.default_headers,
         )
 
+    def _resolve_nonstreaming_max_tokens(self, max_tokens: int | None) -> int:
+        """Resolve the cap for a non-streaming call, rejecting one the SDK cannot send.
+
+        Args:
+            max_tokens: Per-request override, or None.
+
+        Returns:
+            The cap to send.
+
+        Raises:
+            ValueError: If the resolved cap exceeds :data:`MAX_NONSTREAMING_TOKENS`.
+        """
+        resolved = self._resolve_max_tokens(max_tokens)
+        if resolved > MAX_NONSTREAMING_TOKENS:
+            raise ValueError(
+                f"max_tokens={resolved} exceeds the {MAX_NONSTREAMING_TOKENS} limit the "
+                f"Anthropic SDK allows on a non-streaming request. Lower it, or use "
+                f"get_response_stream(), which has no such limit."
+            )
+        return resolved
+
     def _config_create_kwargs(self, fmt: dict[str, Any] | None = None) -> dict[str, Any]:
         """Build config-derived ``messages.create`` kwargs, for splatting.
 
@@ -230,7 +258,7 @@ class Anthropic(LLM):
                 WebSearchTool20250305Param(type="web_search_20250305", name="web_search")
             )
 
-        resolved_max_tokens = self._resolve_max_tokens(max_tokens)
+        resolved_max_tokens = self._resolve_nonstreaming_max_tokens(max_tokens)
 
         try:
             response_message = await self.client.messages.create(
@@ -373,7 +401,7 @@ class Anthropic(LLM):
         against the caller's original schema and rejects an empty/all-null
         result via :func:`canonicalize_json_schema_output`.
         """
-        resolved_max_tokens = self._resolve_max_tokens(max_tokens)
+        resolved_max_tokens = self._resolve_nonstreaming_max_tokens(max_tokens)
 
         if self.use_web_search:
             response, execution_time = await self._json_schema_response_with_web_search_helper(

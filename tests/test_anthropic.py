@@ -18,6 +18,7 @@ from majordomo_llm.exceptions import (
     ResponseTruncatedError,
 )
 from majordomo_llm.providers import Anthropic
+from majordomo_llm.providers.anthropic import MAX_NONSTREAMING_TOKENS
 
 
 class CountryInfo(BaseModel):
@@ -705,7 +706,7 @@ class TestAnthropicMaxTokens:
                 input_cost=3.0,
                 output_cost=15.0,
                 api_key="test-key",
-                max_tokens=64000,
+                max_tokens=8192,
             )
 
     async def test_default_cap_on_plain_text(self, anthropic_llm, mock_anthropic_text_response):
@@ -732,7 +733,7 @@ class TestAnthropicMaxTokens:
 
         await capped_llm.get_response("Test prompt")
 
-        assert capped_llm.client.messages.create.call_args.kwargs["max_tokens"] == 64000
+        assert capped_llm.client.messages.create.call_args.kwargs["max_tokens"] == 8192
 
     async def test_config_cap_applies_to_streaming(
         self, capped_llm, mock_anthropic_stream_events
@@ -742,7 +743,7 @@ class TestAnthropicMaxTokens:
 
         await capped_llm.get_response_stream("Hello")
 
-        assert capped_llm.client.messages.create.call_args.kwargs["max_tokens"] == 64000
+        assert capped_llm.client.messages.create.call_args.kwargs["max_tokens"] == 8192
 
     async def test_per_request_cap_overrides_config(
         self, capped_llm, mock_anthropic_text_response
@@ -766,7 +767,7 @@ class TestAnthropicMaxTokens:
             response_model=CountryInfo, user_prompt="Tell me about France"
         )
 
-        assert capped_llm.client.messages.create.call_args.kwargs["max_tokens"] == 64000
+        assert capped_llm.client.messages.create.call_args.kwargs["max_tokens"] == 8192
 
     async def test_records_stop_reason(self, anthropic_llm, mock_anthropic_text_response):
         """A normal response should carry the provider's stop reason."""
@@ -871,3 +872,67 @@ class TestAnthropicMaxTokens:
 
         with pytest.raises(ValueError, match="positive integer"):
             await anthropic_llm.get_response("Test prompt", max_tokens=0)
+
+
+class TestAnthropicNonStreamingLimit:
+    """The SDK rejects a non-streaming max_tokens over 21333 before sending.
+
+    Regression guard: v0.22.0 pinned each model's vendor ceiling (128000) in
+    config, which became the per-request default and broke every non-streaming
+    call. The mocked client cannot reproduce that — the real SDK's check lives in
+    messages.create — so these assert on what we resolve and reject ourselves.
+    """
+
+    @pytest.fixture
+    def anthropic_llm(self):
+        with patch("majordomo_llm.providers.anthropic.anthropic.AsyncAnthropic"):
+            return Anthropic(
+                model="claude-sonnet-5",
+                input_cost=3.0,
+                output_cost=15.0,
+                api_key="test-key",
+            )
+
+    def test_default_is_under_the_sdk_limit(self):
+        assert DEFAULT_MAX_TOKENS <= MAX_NONSTREAMING_TOKENS
+
+    def test_stream_default_is_over_it(self):
+        """Which is fine — streaming has no such limit — but proves they differ."""
+        assert DEFAULT_STREAM_MAX_TOKENS > MAX_NONSTREAMING_TOKENS
+
+    async def test_rejects_an_over_limit_per_request_value(
+        self, anthropic_llm, mock_anthropic_text_response
+    ):
+        anthropic_llm.client.messages.create = AsyncMock(return_value=mock_anthropic_text_response)
+
+        with pytest.raises(ValueError, match="get_response_stream"):
+            await anthropic_llm.get_response("hi", max_tokens=64000)
+
+    async def test_rejects_an_over_limit_config_value(self, mock_anthropic_text_response):
+        with patch("majordomo_llm.providers.anthropic.anthropic.AsyncAnthropic"):
+            llm = Anthropic(
+                model="claude-sonnet-5", input_cost=3.0, output_cost=15.0,
+                api_key="test-key", max_tokens=128000,
+            )
+        llm.client.messages.create = AsyncMock(return_value=mock_anthropic_text_response)
+
+        with pytest.raises(ValueError, match="128000"):
+            await llm.get_response("hi")
+
+    async def test_structured_path_is_guarded_too(self, anthropic_llm):
+        anthropic_llm.client.messages.create = AsyncMock()
+
+        with pytest.raises(ValueError, match="non-streaming"):
+            await anthropic_llm.get_structured_json_response(
+                response_model=CountryInfo, user_prompt="Tell me about France",
+                max_tokens=64000,
+            )
+
+    async def test_streaming_allows_what_non_streaming_rejects(
+        self, anthropic_llm, mock_anthropic_stream_events
+    ):
+        anthropic_llm.client.messages.create = AsyncMock(return_value=mock_anthropic_stream_events)
+
+        await anthropic_llm.get_response_stream("hi", max_tokens=64000)
+
+        assert anthropic_llm.client.messages.create.call_args.kwargs["max_tokens"] == 64000

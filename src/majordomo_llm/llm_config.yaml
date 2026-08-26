@@ -135,7 +135,6 @@ anthropic:
       supports_temperature_top_p: false
       supports_web_search: true
       supports_structured_outputs: true
-      max_tokens: 128000
     claude-fable-5:
       input_cost: 10.00
       output_cost: 50.00
@@ -143,7 +142,6 @@ anthropic:
       cache_write_cost: 12.50
       supports_temperature_top_p: false
       supports_structured_outputs: true
-      max_tokens: 128000
     claude-opus-4-8:
       input_cost: 5.00
       output_cost: 25.00
@@ -152,7 +150,6 @@ anthropic:
       supports_temperature_top_p: false
       supports_web_search: true
       supports_structured_outputs: true
-      max_tokens: 128000
     # Effort/thinking profiles of claude-opus-4-8 (same SKU via the `model`
     # override; costs/flags are duplicated because entries don't inherit).
     #   -fast    low effort, no thinking    — latency- and cost-sensitive
@@ -168,7 +165,6 @@ anthropic:
       supports_web_search: true
       supports_structured_outputs: true
       reasoning_effort: low
-      max_tokens: 128000
     claude-opus-4-8-medium:
       model: claude-opus-4-8
       input_cost: 5.00
@@ -180,7 +176,6 @@ anthropic:
       supports_structured_outputs: true
       thinking: adaptive
       reasoning_effort: medium
-      max_tokens: 128000
     claude-opus-4-8-deep:
       model: claude-opus-4-8
       input_cost: 5.00
@@ -192,7 +187,6 @@ anthropic:
       supports_structured_outputs: true
       thinking: adaptive
       reasoning_effort: xhigh
-      max_tokens: 128000
     claude-sonnet-5:
       input_cost: 3.00
       output_cost: 15.00
@@ -201,7 +195,6 @@ anthropic:
       supports_temperature_top_p: false
       supports_web_search: true
       supports_structured_outputs: true
-      max_tokens: 128000
     # Legacy models (still available)
     claude-opus-4-7:
       input_cost: 5.00
@@ -211,7 +204,6 @@ anthropic:
       supports_temperature_top_p: false
       supports_web_search: true
       supports_structured_outputs: true
-      max_tokens: 128000
     claude-opus-4-6:
       input_cost: 5.00
       output_cost: 25.00
@@ -220,7 +212,6 @@ anthropic:
       supports_temperature_top_p: false
       supports_web_search: true
       supports_structured_outputs: true
-      max_tokens: 128000
     claude-sonnet-4-6:
       input_cost: 3.00
       output_cost: 15.00
@@ -229,7 +220,6 @@ anthropic:
       supports_temperature_top_p: false
       supports_web_search: true
       supports_structured_outputs: true
-      max_tokens: 128000
     # Claude 4.5 family
     claude-opus-4-5-20251101:
       input_cost: 5.00
@@ -237,7 +227,6 @@ anthropic:
       cached_input_cost: 0.50
       cache_write_cost: 6.25
       supports_web_search: true
-      max_tokens: 64000
     claude-sonnet-4-5-20250929:
       input_cost: 3.00
       output_cost: 15.00
@@ -246,7 +235,6 @@ anthropic:
       supports_temperature_top_p: false
       supports_web_search: true
       supports_structured_outputs: true
-      max_tokens: 64000
     claude-haiku-4-5-20251001:
       input_cost: 1.00
       output_cost: 5.00
@@ -255,7 +243,6 @@ anthropic:
       supports_temperature_top_p: false
       supports_web_search: true
       supports_structured_outputs: true
-      max_tokens: 64000
     # The Claude 4 family (claude-opus-4-1-20250805, claude-opus-4-20250514,
     # claude-sonnet-4-20250514) was retired to deprecated_models below: the
     # Messages API returns 404 not_found_error for all three. Verified
@@ -387,24 +374,19 @@ bedrock:
     moonshot.kimi-k2-thinking:
       input_cost: 0.60
       output_cost: 2.50
-      max_tokens: 262144
     moonshotai.kimi-k2.5:
       input_cost: 0.60
       output_cost: 3.00
-      max_tokens: 262144
     # NVIDIA Nemotron on Bedrock — base model IDs.
     nvidia.nemotron-nano-12b-v2:
       input_cost: 0.06
       output_cost: 0.23
-      max_tokens: 131072
     nvidia.nemotron-nano-3-30b:
       input_cost: 0.06
       output_cost: 0.24
-      max_tokens: 262144
     nvidia.nemotron-super-3-120b:
       input_cost: 0.15
       output_cost: 0.65
-      max_tokens: 262144
     # Meta Llama 4 on Bedrock (cross-region inference profiles)
     us.meta.llama4-maverick-17b-instruct-v1:0:
       input_cost: 0.24
@@ -422,7 +404,6 @@ bedrock:
     deepseek.v3.2:
       input_cost: 0.62
       output_cost: 1.85
-      max_tokens: 163840
 
 # Amazon Bedrock Mantle — Anthropic Claude via AWS-native Messages API.
 # Endpoint: https://bedrock-mantle.{region}.api.aws/anthropic
@@ -439,21 +420,18 @@ bedrock_mantle:
       cached_input_cost: 0.50
       cache_write_cost: 6.25
       supports_temperature_top_p: false
-      max_tokens: 128000
     anthropic.claude-opus-4-8:
       input_cost: 5.00
       output_cost: 25.00
       cached_input_cost: 0.50
       cache_write_cost: 6.25
       supports_temperature_top_p: false
-      max_tokens: 128000
     anthropic.claude-opus-4-7:
       input_cost: 5.00
       output_cost: 25.00
       cached_input_cost: 0.50
       cache_write_cost: 6.25
       supports_temperature_top_p: false
-      max_tokens: 128000
     # Sonnet 4.6 is not yet available on Bedrock Mantle (returns 404
     # not_found_error). Add when AWS lists it on the platform.claude.com page.
     anthropic.claude-haiku-4-5:
@@ -462,7 +440,6 @@ bedrock_mantle:
       cached_input_cost: 0.10
       cache_write_cost: 1.25
       supports_temperature_top_p: false
-      max_tokens: 64000
 
 # Fireworks AI (OpenAI-compatible). Serverless inference only.
 # Model IDs are fully qualified: accounts/fireworks/models/<slug>.

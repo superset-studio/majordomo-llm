@@ -11,6 +11,7 @@ from majordomo_llm import (
     get_llm_instance,
     get_supported_providers,
 )
+from majordomo_llm.base import DEFAULT_STREAM_MAX_TOKENS
 from majordomo_llm.exceptions import ConfigurationError
 from majordomo_llm.providers.anthropic import Anthropic
 from majordomo_llm.providers.deepseek import DeepSeek
@@ -347,39 +348,48 @@ class TestGatewayProviderIsOptIn:
 
 
 class TestMaxTokensForwarding:
-    """Tests for the max_tokens config key reaching the provider instance."""
+    """max_tokens is pinned only where a model cannot take the library default.
 
-    def test_loaded_from_config_for_anthropic(self, mock_all_clients):
-        llm = get_llm_instance("anthropic", "claude-sonnet-4-6")
-        assert llm.max_tokens == 128000
+    The defaults are 16000 non-streaming / 64000 streaming. A model whose real
+    ceiling is at or above those inherits them and must NOT pin a value: pinning
+    the vendor ceiling instead makes it the per-request default, and on Anthropic
+    anything over 21333 is rejected by the SDK before the request is sent.
+    """
 
-    def test_older_models_get_their_lower_ceiling(self, mock_all_clients):
-        """The registry spans two ceilings on Anthropic; they must not be flattened."""
-        assert get_llm_instance("anthropic", "claude-opus-5").max_tokens == 128000
-        assert get_llm_instance("anthropic", "claude-haiku-4-5-20251001").max_tokens == 64000
-        assert get_llm_instance("anthropic", "claude-sonnet-4-5-20250929").max_tokens == 64000
+    def test_anthropic_models_pin_nothing(self, mock_all_clients):
+        """Every Anthropic ceiling is >= the streaming default, so none pins."""
+        for model in LLM_CONFIG["anthropic"]["models"]:
+            assert get_llm_instance("anthropic", model).max_tokens is None, model
 
-    def test_effort_profiles_inherit_the_sku_ceiling(self, mock_all_clients):
-        """The -medium/-deep profiles run thinking inside this budget."""
-        for key in ("claude-opus-4-8-fast", "claude-opus-4-8-medium", "claude-opus-4-8-deep"):
-            assert get_llm_instance("anthropic", key).max_tokens == 128000
+    def test_bedrock_mantle_pins_nothing(self, mock_all_clients):
+        for model in LLM_CONFIG["bedrock_mantle"]["models"]:
+            llm = get_llm_instance("bedrock_mantle", model, region="us-east-1")
+            assert llm.max_tokens is None, model
 
-    def test_loaded_from_config_for_bedrock(self, mock_all_clients):
-        llm = get_llm_instance("bedrock", "deepseek.v3.2", region="us-east-1")
-        assert llm.max_tokens == 163840
+    def test_bedrock_pins_only_the_low_ceiling_models(self, mock_all_clients):
+        """Llama 4 (8192) and DeepSeek-R1 (32768) sit below the 64000 stream default."""
+        pinned = {
+            m: a["max_tokens"]
+            for m, a in LLM_CONFIG["bedrock"]["models"].items()
+            if "max_tokens" in a
+        }
+        assert pinned == {
+            "us.meta.llama4-maverick-17b-instruct-v1:0": 8192,
+            "us.meta.llama4-scout-17b-instruct-v1:0": 8192,
+            "us.deepseek.r1-v1:0": 32768,
+        }
 
-    def test_loaded_from_config_for_bedrock_mantle(self, mock_all_clients):
-        llm = get_llm_instance(
-            "bedrock_mantle", "anthropic.claude-haiku-4-5", region="us-east-1"
-        )
-        assert llm.max_tokens == 64000
+    def test_pinned_value_reaches_the_instance(self, mock_all_clients):
+        llm = get_llm_instance("bedrock", "us.deepseek.r1-v1:0", region="us-east-1")
+        assert llm.max_tokens == 32768
 
-    def test_every_capped_provider_model_declares_one(self):
-        """A missing entry silently reverts that model to the library default."""
+    def test_no_pin_exceeds_the_streaming_default(self):
+        """A pin above the default is pointless; above 21333 it breaks Anthropic."""
         for provider in ("anthropic", "bedrock", "bedrock_mantle"):
-            models = LLM_CONFIG[provider]["models"]
-            missing = [m for m, attrs in models.items() if "max_tokens" not in attrs]
-            assert missing == [], f"{provider} models without max_tokens: {missing}"
+            for model, attrs in LLM_CONFIG[provider]["models"].items():
+                pinned = attrs.get("max_tokens")
+                if pinned is not None:
+                    assert pinned < DEFAULT_STREAM_MAX_TOKENS, f"{provider}/{model}"
 
     def test_not_forwarded_to_providers_that_ignore_it(self, mock_all_clients):
         """Providers that send no cap inherit the model default, not ours."""
@@ -410,9 +420,9 @@ class TestClaude4FamilyDeprecation:
         assert retired in llm.deprecation_warning
 
     @pytest.mark.parametrize("retired", sorted(RETIRED))
-    def test_replacement_carries_its_own_max_tokens(self, retired, mock_all_clients):
-        """The replacement's ceiling applies, not the retired model's."""
-        assert get_llm_instance("anthropic", retired).max_tokens == 128000
+    def test_replacement_pins_nothing(self, retired, mock_all_clients):
+        """The replacement inherits the library defaults, like every Anthropic model."""
+        assert get_llm_instance("anthropic", retired).max_tokens is None
 
     def test_no_alias_still_points_at_a_retired_model(self):
         """Alias validation resolves against the models block only, not

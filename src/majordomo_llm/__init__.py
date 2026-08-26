@@ -72,7 +72,7 @@ from majordomo_llm.providers.novita import Novita
 from majordomo_llm.providers.openai import OpenAI
 from majordomo_llm.providers.together import Together
 
-__version__ = "0.22.0"
+__version__ = "0.22.1"
 
 __all__ = [
     # Base classes and types

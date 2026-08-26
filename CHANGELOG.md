@@ -7,12 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-08-25
+
+### Fixed
+
+- **Every non-streaming Anthropic call raised `ValueError` under 0.22.0.** That release pinned each model's true output ceiling in `llm_config.yaml` — 128000 for the current Claude generation — but the config value is the per-request *default*, not a validation bound, so every request began asking for 128000. The Anthropic SDK computes `expected_time = 3600 * max_tokens / 128000` and refuses any non-streaming request implying more than its 10-minute timeout, putting the hard limit at **21333**. The failure surfaced as `Streaming is required for operations that may take longer than 10 minutes` from inside `messages.create`, before the request was sent, on the plain-text, JSON, and both structured paths
+  - A model now pins `max_tokens` only when its ceiling is below what the library would otherwise send (16000 non-streaming, 64000 streaming) — the only case where the default would be rejected upstream. Three Bedrock models qualify: both Llama 4 profiles at 8192 and `us.deepseek.r1-v1:0` at 32768. All 13 Anthropic and 4 Bedrock Mantle entries pin nothing and inherit the defaults
+  - `Anthropic._resolve_nonstreaming_max_tokens()` guards every non-streaming path against `MAX_NONSTREAMING_TOKENS` (21333). A cap over the limit, whether from config or from a caller, is rejected with a message naming the parameter and pointing at `get_response_stream()` instead of surfacing the SDK's error several frames down
+  - `scripts/check_max_tokens.py` treats an unpinned model's vendor ceiling as informational rather than a mismatch, flagging only a ceiling below the streaming default, and falls through to the streaming probe whenever the non-streaming attempt yields no ceiling — which now includes our own guard refusing the oversized value
+  - The test suite could not have caught this: it patches `anthropic.AsyncAnthropic`, so `messages.create` is an `AsyncMock` and the SDK's check never runs. `TestAnthropicNonStreamingLimit` asserts on what the library resolves and rejects itself, and the fix was verified against the live API
+
 ## [0.22.0] - 2026-08-25
 
 ### Added
 
 - **`max_tokens` is now configurable.** It was hardcoded at every call site that required it — 1024 for plain text and streaming, 4096/8192 for the structured paths in `providers/anthropic.py`, and 1024/4096 in `providers/bedrock.py` — with no way for a caller to raise it. It is now a per-model key in `llm_config.yaml` and a per-request keyword argument on `get_response`, `get_response_stream`, `get_json_response`, and `get_structured_json_response`. Precedence is per-request → model config → library default, resolved in one place (`LLM._resolve_max_tokens`) rather than chosen per call site
-  - Every model in the `anthropic`, `bedrock_mantle`, and `bedrock` blocks now declares its real ceiling, read from the vendor rather than a catalog (see Verification below): 128000 for Opus 5 / Fable 5 / Opus 4.8 (and its effort profiles) / Opus 4.7 / Opus 4.6 / Sonnet 5 / Sonnet 4.6, 64000 for the 4.5 line, 32000 for Opus 4 / 4.1 and Sonnet 4; on Bedrock, 262144 for `moonshotai.kimi-k2.5`, `moonshot.kimi-k2-thinking`, `nvidia.nemotron-nano-3-30b` and `nvidia.nemotron-super-3-120b`, 163840 for `deepseek.v3.2`, 131072 for `nvidia.nemotron-nano-12b-v2`, 32768 for `us.deepseek.r1-v1:0`, and 8192 for the two Llama 4 profiles
+  - Every model in the `anthropic`, `bedrock_mantle`, and `bedrock` blocks pins its vendor ceiling, read from the vendor rather than a catalog (see Verification below): 128000 for the current Claude generation, 64000 for the 4.5 line, and on Bedrock 262144 down to 8192. **This was wrong and is corrected in 0.22.1** — the config value is the per-request default, so pinning a ceiling made every request ask for it
   - Only providers whose API *requires* an output cap read the key. The twelve OpenAI-compatible providers and Gemini omit `max_tokens` entirely and inherit each model's own default, so the key is not forwarded to them rather than being silently accepted
 - **`stop_reason` on `LLMResponse` and `LLMStreamResponse`** — the provider's verbatim stop reason (`end_turn`, `tool_use`, `max_tokens`, …), or `None` for providers that report none. Also recorded in the request body written by `LoggingLLM`, so a truncated call is visible in the log row
 - **`ResponseTruncatedError`**, carrying `max_tokens`, `output_tokens`, and `partial_content`. Exported from `majordomo_llm`

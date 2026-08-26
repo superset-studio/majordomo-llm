@@ -39,6 +39,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from majordomo_llm import get_llm_instance  # noqa: E402
+from majordomo_llm.base import DEFAULT_STREAM_MAX_TOKENS  # noqa: E402
 from majordomo_llm.exceptions import MajordomoError  # noqa: E402
 
 load_dotenv()
@@ -86,6 +87,11 @@ class Result:
     def status(self) -> str:
         if self.reported is None:
             return "UNKNOWN"
+        if self.configured == 0:
+            # Not pinned: the model inherits the library defaults. Report the
+            # vendor ceiling for reference, and flag only if it is low enough
+            # that the default would be rejected.
+            return "LOW" if self.reported < DEFAULT_STREAM_MAX_TOKENS else "INHERITS"
         if self.reported == self.configured:
             return "OK"
         return "MISMATCH"
@@ -121,13 +127,6 @@ def extract_ceiling(message: str) -> int | None:
     return None
 
 
-#: The Anthropic SDK refuses a non-streaming request whose ``max_tokens`` implies
-#: more than ten minutes of generation, client-side, before the server ever sees it.
-#: Those models are re-probed through the streaming path, where the SDK has no such
-#: guard and the API itself rejects the value and names its ceiling.
-_NEEDS_STREAMING = "streaming is required"
-
-
 async def _attempt(llm, streaming: bool) -> str | None:
     """Issue one over-large request; return the vendor's message, or None if accepted."""
     try:
@@ -147,9 +146,13 @@ async def probe(provider: str, model: str, configured: int) -> Result:
     except MajordomoError as e:
         return Result(provider, model, configured, None, f"cannot instantiate: {e}")
 
+    # Non-streaming first, since most vendors answer there. Anthropic does not:
+    # its SDK, and now our own guard, refuse an over-large cap before the request
+    # is sent. Either way, retry through streaming, which has no such limit and
+    # lets the API itself name its ceiling.
     message = await _attempt(llm, streaming=False)
-    if message and _NEEDS_STREAMING in message.lower():
-        message = await _attempt(llm, streaming=True)
+    if message and extract_ceiling(message) is None:
+        message = await _attempt(llm, streaming=True) or message
 
     if message is None:
         return Result(
@@ -187,24 +190,30 @@ async def main() -> int:
     results = [await probe(*entry) for entry in models]
 
     for r in results:
-        marker = {"OK": "✓", "MISMATCH": "✗", "UNKNOWN": "?"}[r.status]
+        marker = {"OK": "✓", "INHERITS": "·", "LOW": "✗", "MISMATCH": "✗", "UNKNOWN": "?"}[
+            r.status
+        ]
         line = f"{marker} {r.provider}/{r.model}"
-        if r.status == "MISMATCH":
-            line += f"  config={r.configured:,} vendor={r.reported:,}"
+        if r.status in ("MISMATCH", "LOW"):
+            line += f"  pinned={r.configured or 'none':} vendor={r.reported:,}"
         elif r.status == "OK":
-            line += f"  {r.configured:,}"
+            line += f"  pinned {r.configured:,}"
+        elif r.status == "INHERITS":
+            line += f"  vendor {r.reported:,} — inherits the defaults"
         print(line)
-        if r.status != "OK":
+        if r.status == "UNKNOWN":
             print(f"    {r.detail}")
 
-    mismatches = [r for r in results if r.status == "MISMATCH"]
+    mismatches = [r for r in results if r.status in ("MISMATCH", "LOW")]
     unknown = [r for r in results if r.status == "UNKNOWN"]
 
     print(f"\n{DIVIDER}")
-    print(f"{len(results) - len(mismatches) - len(unknown)} confirmed, "
-          f"{len(mismatches)} mismatched, {len(unknown)} unresolved")
+    print(f"{len(results) - len(mismatches) - len(unknown)} correct, "
+          f"{len(mismatches)} need attention, {len(unknown)} unresolved")
     if mismatches:
-        print("\nUpdate llm_config.yaml to the vendor-reported values above.")
+        print("\nA model must pin max_tokens only when its ceiling is below the "
+              f"{DEFAULT_STREAM_MAX_TOKENS} streaming default; pinning a higher\n"
+              "value makes it the per-request default and breaks non-streaming calls.")
     print()
     return 1 if mismatches else 0
 
