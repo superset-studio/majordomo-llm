@@ -11,6 +11,8 @@ import yaml
 
 from majordomo_llm.base import LLM
 from majordomo_llm.exceptions import ConfigurationError
+from majordomo_llm.hooks.image_pipeline import ImageHookPipeline
+from majordomo_llm.image import ImageModel
 from majordomo_llm.providers.anthropic import Anthropic
 from majordomo_llm.providers.baseten import Baseten
 from majordomo_llm.providers.bedrock import Bedrock
@@ -20,11 +22,13 @@ from majordomo_llm.providers.deepinfra import DeepInfra
 from majordomo_llm.providers.deepseek import DeepSeek
 from majordomo_llm.providers.fireworks import Fireworks
 from majordomo_llm.providers.gemini import Gemini
+from majordomo_llm.providers.gemini_image import GeminiImage
 from majordomo_llm.providers.majordomo import Majordomo
 from majordomo_llm.providers.moonshot import Moonshot
 from majordomo_llm.providers.nebius import Nebius
 from majordomo_llm.providers.novita import Novita
 from majordomo_llm.providers.openai import OpenAI
+from majordomo_llm.providers.openai_image import OpenAIImage
 from majordomo_llm.providers.together import Together
 
 logger = logging.getLogger(__name__)
@@ -53,6 +57,11 @@ _PROVIDER_CLASSES: dict[str, type[LLM]] = {
     "majordomo": Majordomo,
 }
 
+_IMAGE_PROVIDER_CLASSES: dict[str, type[ImageModel]] = {
+    "openai": OpenAIImage,
+    "gemini": GeminiImage,
+}
+
 #: Gateway-routed pseudo-providers. These require a live gateway (``base_url`` +
 #: gateway key) and cannot be instantiated standalone, so :func:`get_llm_instance`
 #: treats their per-model token costs as optional (cost is resolved per request
@@ -71,6 +80,10 @@ def _load_llm_config() -> dict[str, dict[str, Any]]:
 #: Configuration mapping for all supported providers and models.
 #: Costs are specified in USD per million tokens.
 LLM_CONFIG: dict[str, dict[str, Any]] = _load_llm_config()
+
+#: Image-generation configuration is intentionally removed from LLM_CONFIG so
+#: text-provider enumeration and alias validation remain backward compatible.
+IMAGE_CONFIG: dict[str, dict[str, Any]] = LLM_CONFIG.pop("image_generation", {})
 
 #: Mapping of deprecated model names to their recommended replacements,
 #: keyed by provider.
@@ -163,6 +176,81 @@ def get_supported_models(provider: str) -> list[str]:
         available = ", ".join(LLM_CONFIG.keys())
         raise ConfigurationError(f"Unknown LLM provider '{provider}'. Available: {available}")
     return list(provider_config.get("models", {}).keys())
+
+
+def get_supported_image_providers() -> list[str]:
+    """Return providers with configured image-generation models."""
+    return list(IMAGE_CONFIG.keys())
+
+
+def get_supported_image_models(provider: str) -> list[str]:
+    """Return image-generation models configured for a provider."""
+    provider_config = IMAGE_CONFIG.get(provider)
+    if provider_config is None:
+        available = ", ".join(IMAGE_CONFIG.keys())
+        raise ConfigurationError(f"Unknown image provider '{provider}'. Available: {available}")
+    return list(provider_config.get("models", {}).keys())
+
+
+def get_image_instance(
+    provider: str,
+    model: str,
+    *,
+    api_key: str | None = None,
+    api_key_alias: str | None = None,
+    hook_pipeline: ImageHookPipeline | None = None,
+    base_url: str | None = None,
+    default_headers: dict[str, str] | None = None,
+) -> ImageModel:
+    """Create an image-generation model from bundled configuration."""
+    provider_config = IMAGE_CONFIG.get(provider)
+    if provider_config is None:
+        available = ", ".join(IMAGE_CONFIG.keys())
+        raise ConfigurationError(f"Unknown image provider '{provider}'. Available: {available}")
+    attributes = provider_config.get("models", {}).get(model)
+    if attributes is None:
+        available = ", ".join(provider_config.get("models", {}).keys())
+        raise ConfigurationError(
+            f"Unknown image model '{model}' for provider '{provider}'. Available: {available}"
+        )
+    cls = _IMAGE_PROVIDER_CLASSES.get(provider)
+    if cls is None:
+        raise ConfigurationError(f"Image provider '{provider}' has no implementation")
+
+    required_costs = (
+        "text_input_cost",
+        "image_input_cost",
+        "text_output_cost",
+        "image_output_cost",
+    )
+    missing = [name for name in required_costs if name not in attributes]
+    if missing:
+        raise ConfigurationError(
+            f"Image model '{provider}/{model}' is missing pricing fields: {', '.join(missing)}"
+        )
+    image_cls: Any = cls
+    return cast(
+        ImageModel,
+        image_cls(
+            model=model,
+            text_input_cost=attributes["text_input_cost"],
+            image_input_cost=attributes["image_input_cost"],
+            text_output_cost=attributes["text_output_cost"],
+            image_output_cost=attributes["image_output_cost"],
+            api_key=api_key,
+            api_key_alias=api_key_alias,
+            hook_pipeline=hook_pipeline,
+            base_url=base_url,
+            default_headers=default_headers,
+        ),
+    )
+
+
+def get_all_image_instances() -> Iterator[ImageModel]:
+    """Yield every configured image-generation model."""
+    for provider, provider_config in IMAGE_CONFIG.items():
+        for model in provider_config.get("models", {}):
+            yield get_image_instance(provider, model)
 
 
 class ModelPricing(NamedTuple):
@@ -329,6 +417,11 @@ def get_llm_instance(
 
     if provider in ("openai", "anthropic", "gemini", "bedrock"):
         provider_kwargs["use_web_search"] = use_web_search
+
+    if provider in ("openai", "anthropic", "gemini"):
+        provider_kwargs["supports_image_input"] = model_attributes.get(
+            "supports_image_input", False
+        )
 
     # Providers on the shared OpenAI-compatible base default to supporting strict
     # json_schema; a model opts out in config when its deployment accepts the

@@ -16,11 +16,13 @@ from majordomo_llm.providers.deepinfra import DeepInfra
 from majordomo_llm.providers.deepseek import DeepSeek
 from majordomo_llm.providers.fireworks import Fireworks
 from majordomo_llm.providers.gemini import Gemini
+from majordomo_llm.providers.gemini_image import GeminiImage
 from majordomo_llm.providers.majordomo import Majordomo
 from majordomo_llm.providers.moonshot import Moonshot
 from majordomo_llm.providers.nebius import Nebius
 from majordomo_llm.providers.novita import Novita
 from majordomo_llm.providers.openai import OpenAI
+from majordomo_llm.providers.openai_image import OpenAIImage
 from majordomo_llm.providers.together import Together
 
 __all__ = [
@@ -33,10 +35,12 @@ __all__ = [
     "DeepSeek",
     "Fireworks",
     "Gemini",
+    "GeminiImage",
     "Majordomo",
     "Moonshot",
     "Nebius",
     "Novita",
     "OpenAI",
+    "OpenAIImage",
     "Together",
 ]

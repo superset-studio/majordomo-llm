@@ -9,6 +9,7 @@ import httpx
 import openai
 from cohere.core.api_error import ApiError as CohereApiError
 from google.genai import errors as genai_errors
+from google.genai._gaos.lib.compat_errors import APIError as InteractionsAPIError
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_random_exponential
 
 from majordomo_llm.exceptions import EmptyStructuredResponseError, ProviderError
@@ -62,6 +63,10 @@ def get_provider_error_status_code(exc: BaseException) -> int | None:
     if isinstance(exc, genai_errors.APIError):
         code = exc.code
         return code if isinstance(code, int) else None
+
+    if isinstance(exc, InteractionsAPIError):
+        status_code = exc.status_code
+        return status_code if isinstance(status_code, int) else None
 
     return None
 

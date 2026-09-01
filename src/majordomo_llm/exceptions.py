@@ -29,6 +29,48 @@ class ConfigurationError(MajordomoError):
     """
 
 
+class InputModalityUnsupported(ConfigurationError):
+    """Raised when a model cannot accept a requested input modality."""
+
+    def __init__(self, provider: str, model: str, modality: str):
+        super().__init__(
+            f"Input modality '{modality}' is not supported by provider "
+            f"'{provider}' model '{model}'."
+        )
+        self.provider = provider
+        self.model = model
+        self.modality = modality
+
+
+class ImageOptionUnsupported(ConfigurationError):
+    """Raised when an image model cannot represent a requested option.
+
+    This is narrower than :class:`ConfigurationError` so an image cascade can
+    try another model without swallowing missing credentials, unknown models,
+    or other invalid configuration.
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        model: str,
+        option: str,
+        value: object,
+        *,
+        supported: str | None = None,
+    ) -> None:
+        supported_message = f" Supported: {supported}." if supported else ""
+        super().__init__(
+            f"Image option '{option}={value}' is not supported by provider "
+            f"'{provider}' model '{model}'.{supported_message}"
+        )
+        self.provider = provider
+        self.model = model
+        self.option = option
+        self.value = value
+        self.supported = supported
+
+
 class ProviderError(MajordomoError):
     """Raised when an LLM provider returns an error.
 

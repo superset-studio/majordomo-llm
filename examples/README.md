@@ -12,6 +12,7 @@ This directory contains example applications demonstrating majordomo-llm feature
 | `flagship_demo.py` | Frontier closed models vs open-weight alternatives | Anthropic, OpenAI, Gemini, DeepSeek, Bedrock, Fireworks, Together |
 | `prompt_caching_demo.py` | Explicit vs automatic prompt caching, cache-aware costs | Anthropic, Bedrock Mantle, OpenAI, Gemini, DeepSeek, open-weight hosts |
 | `web_search_demo.py` | Server-side web search and `tool_use_cost` | Anthropic, OpenAI, Gemini |
+| `image_demo.py` | Image understanding plus image generation | Anthropic/OpenAI/Gemini understanding; OpenAI/Gemini generation |
 | `routing_demo.py` | `majordomo` gateway provider — server-side optimal routing | Requires Majordomo Steward |
 
 Every demo accepts `--provider <name>` to run a single provider and `--gateway` to

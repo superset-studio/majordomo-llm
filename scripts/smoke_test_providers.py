@@ -27,6 +27,7 @@ Usage:
   uv run python scripts/smoke_test_providers.py
   uv run python scripts/smoke_test_providers.py --provider anthropic
   uv run python scripts/smoke_test_providers.py --capability stream
+  uv run python scripts/smoke_test_providers.py --capability image --skip-steward
   uv run python scripts/smoke_test_providers.py --skip-direct
 """
 
@@ -34,22 +35,24 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
 import os
+import re
 import sys
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import cast
 
 from dotenv import load_dotenv
+from PIL import Image
 from pydantic import BaseModel
 
-from majordomo_llm import get_llm_instance
+from majordomo_llm import ImageInput, get_llm_instance
 from majordomo_llm.base import LLM
 from majordomo_llm.exceptions import StructuredOutputUnsupported
 from majordomo_llm.factory import LLM_CONFIG, get_supported_providers
-
-load_dotenv()
 
 PROVIDER_API_KEY_ENV: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
@@ -132,6 +135,9 @@ class CellResult:
     elapsed: float = 0.0
     error: str = ""  # Truncated, for inline matrix display.
     full_error: str = ""  # Full exception text, written to the sidecar log.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_cost: float = 0.0
 
 
 async def _run_text(llm: LLM, extra_headers: dict[str, str] | None) -> CellResult:
@@ -186,6 +192,33 @@ async def _run_stream(llm: LLM, extra_headers: dict[str, str] | None) -> CellRes
                       "" if ok else "empty stream")
 
 
+def _image_fixture() -> ImageInput:
+    """Create a deterministic single-color PNG without persisting image bytes."""
+    buffer = io.BytesIO()
+    Image.new("RGB", (32, 32), (0, 102, 204)).save(buffer, format="PNG")
+    return ImageInput(data=buffer.getvalue(), media_type="image/png")
+
+
+async def _run_image(llm: LLM, extra_headers: dict[str, str] | None) -> CellResult:
+    t = time.time()
+    response = await llm.get_response(
+        "What is the only color in this image? Reply with exactly BLUE.",
+        temperature=0.0,
+        images=(_image_fixture(),),
+        extra_headers=extra_headers,
+    )
+    content = response.content if isinstance(response.content, str) else ""
+    ok = re.search(r"\bblue\b", content, flags=re.IGNORECASE) is not None
+    return CellResult(
+        status=OK if ok else FAIL,
+        elapsed=time.time() - t,
+        error="" if ok else "response did not identify the image as blue",
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+        total_cost=response.total_cost,
+    )
+
+
 CapabilityFn = Callable[[LLM, "dict[str, str] | None"], Awaitable[CellResult]]
 
 CAPABILITIES: dict[str, CapabilityFn] = {
@@ -193,12 +226,13 @@ CAPABILITIES: dict[str, CapabilityFn] = {
     "json": _run_json,
     "structured": _run_structured,
     "stream": _run_stream,
+    "image": _run_image,
 }
 
 
 def _canonical_model(provider: str) -> str:
     """First model in llm_config.yaml for the provider (= latest by convention)."""
-    return next(iter(LLM_CONFIG[provider]["models"]))
+    return cast(str, next(iter(LLM_CONFIG[provider]["models"])))
 
 
 def _steward_default_headers(gateway_key: str, run_id: str) -> dict[str, str]:
@@ -276,6 +310,8 @@ async def _run_cell(
             gateway_key=gateway_key,
             run_id=run_id,
         )
+        if capability == "image" and not llm.supports_image_input:
+            return CellResult(SKIP, 0.0, "image input unsupported by model")
         # Per-call headers only matter on the steward leg; direct providers
         # would just ignore them but we keep the wire clean.
         extra_headers: dict[str, str] | None = None
@@ -310,9 +346,15 @@ def _print_cell_done(
     tricks — each cell's line appears as soon as the call returns."""
     elapsed = f"({cell.elapsed:.1f}s)" if cell.elapsed else ""
     err = f" — {cell.error}" if cell.error else ""
+    usage = ""
+    if cell.status == OK and capability == "image":
+        usage = (
+            f" tokens={cell.input_tokens}+{cell.output_tokens}"
+            f" cost=${cell.total_cost:.6f}"
+        )
     print(
         f"{_row_prefix(provider, model, route)} "
-        f"{capability:11} {cell.status} {elapsed}{err}",
+        f"{capability:11} {cell.status} {elapsed}{usage}{err}",
         flush=True,
     )
 
@@ -429,6 +471,7 @@ async def _run_all(
 
 
 def main() -> int:
+    load_dotenv()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--provider", action="append", default=None,

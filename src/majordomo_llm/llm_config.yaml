@@ -24,18 +24,21 @@ openai:
   models:
     # GPT-5.6 family (latest)
     gpt-5.6-sol:
+      supports_image_input: true
       input_cost: 5.00
       output_cost: 30.00
       cached_input_cost: 0.50
       supports_temperature_top_p: false
       supports_web_search: true
     gpt-5.6-terra:
+      supports_image_input: true
       input_cost: 2.50
       output_cost: 15.00
       cached_input_cost: 0.25
       supports_temperature_top_p: false
       supports_web_search: true
     gpt-5.6-luna:
+      supports_image_input: true
       input_cost: 1.00
       output_cost: 6.00
       cached_input_cost: 0.10
@@ -43,6 +46,7 @@ openai:
       supports_web_search: true
     # GPT-5.5 family
     gpt-5.5:
+      supports_image_input: true
       input_cost: 5.00
       output_cost: 30.00
       cached_input_cost: 0.50
@@ -50,67 +54,79 @@ openai:
       supports_web_search: true
     # GPT-5.4 family
     gpt-5.4:
+      supports_image_input: true
       input_cost: 2.50
       output_cost: 15.00
       cached_input_cost: 0.25
       supports_temperature_top_p: false
       supports_web_search: true
     gpt-5.4-mini:
+      supports_image_input: true
       input_cost: 0.75
       output_cost: 4.50
       cached_input_cost: 0.075
       supports_temperature_top_p: false
       supports_web_search: true
     gpt-5.4-nano:
+      supports_image_input: true
       input_cost: 0.20
       output_cost: 1.25
       cached_input_cost: 0.02
       supports_temperature_top_p: false
     gpt-5.4-pro:
+      supports_image_input: true
       input_cost: 30.00
       output_cost: 180.00
       cached_input_cost: 3.00
       supports_temperature_top_p: false
     # GPT-5 family
     gpt-5:
+      supports_image_input: true
       input_cost: 1.25
       output_cost: 10.00
       cached_input_cost: 0.125
       supports_temperature_top_p: false
       supports_web_search: true
     gpt-5-mini:
+      supports_image_input: true
       input_cost: 0.25
       output_cost: 2.00
       cached_input_cost: 0.025
       supports_temperature_top_p: false
       supports_web_search: true
     gpt-5-nano:
+      supports_image_input: true
       input_cost: 0.05
       output_cost: 0.40
       cached_input_cost: 0.005
       supports_temperature_top_p: false
     # GPT-4.1 family
     gpt-4.1:
+      supports_image_input: true
       input_cost: 2.00
       output_cost: 8.00
       cached_input_cost: 0.50
       supports_web_search: true
     gpt-4.1-mini:
+      supports_image_input: true
       input_cost: 0.40
       output_cost: 1.60
       cached_input_cost: 0.10
       supports_web_search: true
     gpt-4.1-nano:
+      supports_image_input: true
       input_cost: 0.10
       output_cost: 0.40
       cached_input_cost: 0.025
     # o-series reasoning models
     o3:
+      supports_image_input: true
       input_cost: 2.00
       output_cost: 8.00
       cached_input_cost: 0.50
       supports_temperature_top_p: false
     o4-mini:
+      supports_image_input: true
       input_cost: 1.10
       output_cost: 4.40
       cached_input_cost: 0.275
@@ -128,6 +144,7 @@ anthropic:
     # Current flagship models. supports_temperature_top_p is false across the
     # 4.7+ / 5 generation (temperature/top_p are rejected).
     claude-opus-5:
+      supports_image_input: true
       input_cost: 5.00
       output_cost: 25.00
       cached_input_cost: 0.50
@@ -136,6 +153,7 @@ anthropic:
       supports_web_search: true
       supports_structured_outputs: true
     claude-fable-5:
+      supports_image_input: true
       input_cost: 10.00
       output_cost: 50.00
       cached_input_cost: 1.00
@@ -143,6 +161,7 @@ anthropic:
       supports_temperature_top_p: false
       supports_structured_outputs: true
     claude-opus-4-8:
+      supports_image_input: true
       input_cost: 5.00
       output_cost: 25.00
       cached_input_cost: 0.50
@@ -156,6 +175,7 @@ anthropic:
     #   -medium  medium effort + adaptive   — balanced
     #   -deep    xhigh effort + adaptive    — hardest reasoning/agentic work
     claude-opus-4-8-fast:
+      supports_image_input: true
       model: claude-opus-4-8
       input_cost: 5.00
       output_cost: 25.00
@@ -166,6 +186,7 @@ anthropic:
       supports_structured_outputs: true
       reasoning_effort: low
     claude-opus-4-8-medium:
+      supports_image_input: true
       model: claude-opus-4-8
       input_cost: 5.00
       output_cost: 25.00
@@ -177,6 +198,7 @@ anthropic:
       thinking: adaptive
       reasoning_effort: medium
     claude-opus-4-8-deep:
+      supports_image_input: true
       model: claude-opus-4-8
       input_cost: 5.00
       output_cost: 25.00
@@ -188,6 +210,7 @@ anthropic:
       thinking: adaptive
       reasoning_effort: xhigh
     claude-sonnet-5:
+      supports_image_input: true
       input_cost: 3.00
       output_cost: 15.00
       cached_input_cost: 0.30
@@ -197,6 +220,7 @@ anthropic:
       supports_structured_outputs: true
     # Legacy models (still available)
     claude-opus-4-7:
+      supports_image_input: true
       input_cost: 5.00
       output_cost: 25.00
       cached_input_cost: 0.50
@@ -205,6 +229,7 @@ anthropic:
       supports_web_search: true
       supports_structured_outputs: true
     claude-opus-4-6:
+      supports_image_input: true
       input_cost: 5.00
       output_cost: 25.00
       cached_input_cost: 0.50
@@ -213,6 +238,7 @@ anthropic:
       supports_web_search: true
       supports_structured_outputs: true
     claude-sonnet-4-6:
+      supports_image_input: true
       input_cost: 3.00
       output_cost: 15.00
       cached_input_cost: 0.30
@@ -222,12 +248,14 @@ anthropic:
       supports_structured_outputs: true
     # Claude 4.5 family
     claude-opus-4-5-20251101:
+      supports_image_input: true
       input_cost: 5.00
       output_cost: 25.00
       cached_input_cost: 0.50
       cache_write_cost: 6.25
       supports_web_search: true
     claude-sonnet-4-5-20250929:
+      supports_image_input: true
       input_cost: 3.00
       output_cost: 15.00
       cached_input_cost: 0.30
@@ -236,6 +264,7 @@ anthropic:
       supports_web_search: true
       supports_structured_outputs: true
     claude-haiku-4-5-20251001:
+      supports_image_input: true
       input_cost: 1.00
       output_cost: 5.00
       cached_input_cost: 0.10
@@ -252,17 +281,20 @@ gemini:
   models:
     # Gemini 3.6 family (current flagship)
     gemini-3.6-flash:
+      supports_image_input: true
       input_cost: 1.50
       output_cost: 7.50
       cached_input_cost: 0.375
       supports_web_search: true
     # Gemini 3.5 family
     gemini-3.5-flash:
+      supports_image_input: true
       input_cost: 1.50
       output_cost: 9.00
       cached_input_cost: 0.375
       supports_web_search: true
     gemini-3.5-flash-lite:
+      supports_image_input: true
       input_cost: 0.30
       output_cost: 2.50
       cached_input_cost: 0.075
@@ -271,33 +303,39 @@ gemini:
     # Pro Preview uses tiered pricing: ≤200K tokens at $2.00/$12.00,
     # >200K at $4.00/$18.00. Lower tier registered here.
     gemini-3.1-pro-preview:
+      supports_image_input: true
       input_cost: 2.00
       output_cost: 12.00
       cached_input_cost: 0.50
       supports_web_search: true
     gemini-3.1-flash-lite:
+      supports_image_input: true
       input_cost: 0.25
       output_cost: 1.50
       cached_input_cost: 0.0625
       supports_web_search: true
     # Gemini 3 family (preview)
     gemini-3-flash-preview:
+      supports_image_input: true
       input_cost: 0.50
       output_cost: 3.00
       cached_input_cost: 0.125
       supports_web_search: true
     # Gemini 2.5 family (stable, prior generation)
     gemini-2.5-pro:
+      supports_image_input: true
       input_cost: 1.25
       output_cost: 10.00
       cached_input_cost: 0.3125
       supports_web_search: true
     gemini-2.5-flash:
+      supports_image_input: true
       input_cost: 0.30
       output_cost: 2.50
       cached_input_cost: 0.075
       supports_web_search: true
     gemini-2.5-flash-lite:
+      supports_image_input: true
       input_cost: 0.10
       output_cost: 0.40
       cached_input_cost: 0.025
@@ -747,6 +785,32 @@ majordomo:
     glm-5.1: {}
     glm-5.2: {}
     inkling: {}
+
+# Image-generation models use modality-specific token pricing. They are kept
+# separate from text models because their response contract and output billing
+# are different from LLMResponse. Rates confirmed 2026-08-26 from the official
+# OpenAI GPT Image 2 announcement/model documentation and Gemini Developer API
+# pricing page; all values are USD per million modality tokens.
+image_generation:
+  openai:
+    models:
+      gpt-image-2:
+        text_input_cost: 5.00
+        image_input_cost: 8.00
+        text_output_cost: 10.00
+        image_output_cost: 30.00
+  gemini:
+    models:
+      gemini-3.1-flash-image:
+        text_input_cost: 0.50
+        image_input_cost: 0.50
+        text_output_cost: 3.00
+        image_output_cost: 60.00
+      gemini-3.1-flash-lite-image:
+        text_input_cost: 0.25
+        image_input_cost: 0.25
+        text_output_cost: 1.50
+        image_output_cost: 30.00
 
 # Deprecated model mappings
 # When a user requests a deprecated model, it is automatically replaced with

@@ -5,8 +5,12 @@ from typing import Any, cast
 
 from tenacity import RetryError
 
-from majordomo_llm.base import LLM, LLMJSONResponse, LLMResponse, LLMStreamResponse
-from majordomo_llm.exceptions import ProviderError, ResponseParsingError
+from majordomo_llm.base import LLM, ImageInput, LLMJSONResponse, LLMResponse, LLMStreamResponse
+from majordomo_llm.exceptions import (
+    InputModalityUnsupported,
+    ProviderError,
+    ResponseParsingError,
+)
 from majordomo_llm.factory import get_llm_instance
 from majordomo_llm.hooks.pipeline import HookPipeline
 
@@ -81,6 +85,7 @@ class LLMCascade(LLM):
             input_cost=primary.input_cost,
             output_cost=primary.output_cost,
             supports_temperature_top_p=primary.supports_temperature_top_p,
+            supports_image_input=any(llm.supports_image_input for llm in self.llms),
             hook_pipeline=hook_pipeline,
         )
 
@@ -127,6 +132,56 @@ class LLMCascade(LLM):
                 top_p=top_p,
                 extra_headers=extra_headers,
                 max_tokens=max_tokens,
+            ),
+        )
+
+    async def _get_response_with_images_impl(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        return cast(
+            LLMResponse,
+            await self._cascade_call(
+                "get_response",
+                user_prompt=user_prompt,
+                images=images,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                top_p=top_p,
+                extra_headers=extra_headers,
+                max_tokens=max_tokens,
+                failover_exceptions=(ProviderError, InputModalityUnsupported),
+            ),
+        )
+
+    async def _get_response_stream_with_images_impl(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMStreamResponse:
+        return cast(
+            LLMStreamResponse,
+            await self._cascade_call(
+                "get_response_stream",
+                user_prompt=user_prompt,
+                images=images,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                top_p=top_p,
+                extra_headers=extra_headers,
+                max_tokens=max_tokens,
+                failover_exceptions=(ProviderError, InputModalityUnsupported),
             ),
         )
 
@@ -180,8 +235,58 @@ class LLMCascade(LLM):
         max_tokens: int | None = None,
     ) -> LLMResponse:
         """Unused on the cascade — ``_get_json_schema_response_retried`` dispatches directly."""
+        raise NotImplementedError("LLMCascade dispatches via _get_json_schema_response_retried")
+
+    async def _get_json_schema_response_with_images_retried(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        response_schema: dict[str, Any],
+        system_prompt: str | None = None,
+        schema_name: str = "Response",
+        schema_description: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        return cast(
+            LLMResponse,
+            await self._cascade_call(
+                "get_json_schema_response",
+                user_prompt=user_prompt,
+                images=images,
+                response_schema=response_schema,
+                system_prompt=system_prompt,
+                schema_name=schema_name,
+                schema_description=schema_description,
+                temperature=temperature,
+                top_p=top_p,
+                extra_headers=extra_headers,
+                max_tokens=max_tokens,
+                failover_exceptions=(
+                    ProviderError,
+                    ResponseParsingError,
+                    InputModalityUnsupported,
+                ),
+            ),
+        )
+
+    async def _get_json_schema_response_with_images(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        response_schema: dict[str, Any],
+        system_prompt: str | None = None,
+        schema_name: str = "Response",
+        schema_description: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
         raise NotImplementedError(
-            "LLMCascade dispatches via _get_json_schema_response_retried"
+            "LLMCascade dispatches via _get_json_schema_response_with_images_retried"
         )
 
     async def _cascade_call(

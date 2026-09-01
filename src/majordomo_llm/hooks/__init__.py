@@ -14,6 +14,17 @@ Example:
     >>> llm = OpenAI(model="gpt-5", input_cost=..., output_cost=..., hook_pipeline=pipeline)
 """
 
+from majordomo_llm.hooks.image_builtin import (
+    ImageIntegrityHook,
+    ImagePromptRegexHook,
+    ImageRequestLimitsHook,
+)
+from majordomo_llm.hooks.image_pipeline import ImageHookPipeline, ImageHookState
+from majordomo_llm.hooks.image_protocol import (
+    ImageHook,
+    ImageHookOutcome,
+    ImageHookRetryRequested,
+)
 from majordomo_llm.hooks.llm_judge_hook import LLMJudgeHook
 from majordomo_llm.hooks.pipeline import HookPipeline, OnVerdicts
 from majordomo_llm.hooks.protocol import (
@@ -31,6 +42,14 @@ __all__ = [
     "HookOutcome",
     "HookPipeline",
     "HookVerdict",
+    "ImageHook",
+    "ImageHookOutcome",
+    "ImageHookPipeline",
+    "ImageHookRetryRequested",
+    "ImageHookState",
+    "ImageIntegrityHook",
+    "ImagePromptRegexHook",
+    "ImageRequestLimitsHook",
     "LLMHook",
     "LLMJudgeHook",
     "OnVerdicts",

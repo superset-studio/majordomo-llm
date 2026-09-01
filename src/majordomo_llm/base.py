@@ -8,7 +8,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from jsonschema import ValidationError as JSONSchemaValidationError
 from jsonschema import validate as validate_json_schema
@@ -17,12 +17,15 @@ from pydantic import BaseModel
 from majordomo_llm.exceptions import (
     ConfigurationError,
     EmptyStructuredResponseError,
+    InputModalityUnsupported,
     ResponseParsingError,
     ResponseTruncatedError,
     StructuredOutputUnsupported,
 )
-from majordomo_llm.hooks.pipeline import HookPipeline
 from majordomo_llm.retry import retry_provider_call
+
+if TYPE_CHECKING:
+    from majordomo_llm.hooks.pipeline import HookPipeline
 
 #: Output cap applied when neither the caller nor ``llm_config.yaml`` sets one,
 #: for providers that require ``max_tokens`` on every request (Anthropic,
@@ -33,6 +36,30 @@ DEFAULT_MAX_TOKENS = 16_000
 #: Output cap for streaming requests, where the SDK read timeout does not
 #: apply between chunks, so the model gets substantially more room.
 DEFAULT_STREAM_MAX_TOKENS = 64_000
+
+SUPPORTED_IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
+
+
+@dataclass(frozen=True)
+class ImageInput:
+    """Validated in-memory image supplied to a multimodal LLM request.
+
+    Image bytes are deliberately kept in memory and are never fetched from a
+    URL by the library. This gives every provider the same input contract and
+    avoids surprising network access or provider-specific URL semantics.
+    """
+
+    data: bytes
+    media_type: str
+
+    def __post_init__(self) -> None:
+        if not self.data:
+            raise ValueError("ImageInput.data must not be empty")
+        if self.media_type not in SUPPORTED_IMAGE_MEDIA_TYPES:
+            supported = ", ".join(sorted(SUPPORTED_IMAGE_MEDIA_TYPES))
+            raise ValueError(
+                f"Unsupported image media type '{self.media_type}'. Supported: {supported}"
+            )
 
 
 def _hash_api_key(api_key: str) -> str:
@@ -369,6 +396,7 @@ def ensure_no_unexpected_kwargs(kwargs: dict[str, Any]) -> None:
         unexpected = ", ".join(sorted(kwargs))
         raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
 
+
 #: Type variable for Pydantic model types used in structured responses.
 T = TypeVar("T", bound=BaseModel)
 
@@ -424,9 +452,7 @@ def compute_costs(
     else:
         cached_rate = cached_input_cost if cached_input_cost is not None else input_cost
         uncached_tokens = max(input_tokens - cached_tokens, 0)
-        in_cost = (
-            uncached_tokens * input_cost + cached_tokens * cached_rate
-        ) / TOKENS_PER_MILLION
+        in_cost = (uncached_tokens * input_cost + cached_tokens * cached_rate) / TOKENS_PER_MILLION
     out_cost = (output_tokens * output_cost) / TOKENS_PER_MILLION
     return in_cost, out_cost, in_cost + out_cost
 
@@ -722,11 +748,12 @@ class LLM(ABC):
         api_key_alias: str | None = None,
         base_url: str | None = None,
         default_headers: dict[str, str] | None = None,
-        hook_pipeline: HookPipeline | None = None,
+        hook_pipeline: "HookPipeline | None" = None,
         cached_input_cost: float | None = None,
         cache_write_cost: float | None = None,
         use_prompt_caching: bool = True,
         max_tokens: int | None = None,
+        supports_image_input: bool = False,
     ) -> None:
         """Initialize the LLM instance.
 
@@ -757,6 +784,7 @@ class LLM(ABC):
                 key in ``llm_config.yaml``. ``None`` falls back to
                 :data:`DEFAULT_MAX_TOKENS` / :data:`DEFAULT_STREAM_MAX_TOKENS`.
                 Only providers whose API requires an output cap send it.
+            supports_image_input: Whether the model accepts image inputs.
         """
         self.provider = provider
         self.model = model
@@ -766,6 +794,7 @@ class LLM(ABC):
         self.cache_write_cost = cache_write_cost
         self.use_prompt_caching = use_prompt_caching
         self.max_tokens = max_tokens
+        self.supports_image_input = supports_image_input
         self.supports_temperature_top_p = supports_temperature_top_p
         self.use_web_search = use_web_search
         self.api_key_hash = _hash_api_key(api_key) if api_key else None
@@ -775,6 +804,37 @@ class LLM(ABC):
         self.hook_pipeline = hook_pipeline
         self.deprecation_warning: str | None = None
         self.requested_model: str | None = None
+
+    def _validate_images(self, images: tuple[ImageInput, ...]) -> None:
+        """Reject image inputs before a provider call when unsupported."""
+        if images and not self.supports_image_input:
+            raise InputModalityUnsupported(self.provider, self.model, "image")
+
+    async def _get_response_with_images_impl(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        """Provider implementation for image understanding."""
+        raise InputModalityUnsupported(self.provider, self.model, "image")
+
+    async def _get_response_stream_with_images_impl(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMStreamResponse:
+        """Provider streaming implementation for image understanding."""
+        raise InputModalityUnsupported(self.provider, self.model, "image")
 
     def get_full_model_name(self) -> str:
         """Get the fully qualified model name.
@@ -836,9 +896,7 @@ class LLM(ABC):
             provider=self.provider,
         )
 
-    def _sampling_params(
-        self, temperature: float | None, top_p: float | None
-    ) -> dict[str, Any]:
+    def _sampling_params(self, temperature: float | None, top_p: float | None) -> dict[str, Any]:
         """Resolve which sampling parameters to send on a request.
 
         The library does not impose a sampling policy: a parameter is sent only
@@ -850,9 +908,9 @@ class LLM(ABC):
         covers every current OpenAI and Anthropic flagship, plus deployments
         that pin their sampling values — Moonshot's Kimi SKUs require
         ``temperature=1`` / ``top_p=0.95``, and sending anything else is a 400.
-        When a caller explicitly passed a value in that case it is dropped, with
-        a warning, rather than failing the call: an LLMCascade or alias chain can
-        legitimately mix members that do and do not accept sampling parameters.
+        Caller-supplied values are silently dropped in that case rather than
+        failing the call: an LLMCascade or alias chain can legitimately mix
+        members that do and do not accept sampling parameters.
 
         Args:
             temperature: Caller-supplied temperature, or None if unset.
@@ -866,20 +924,6 @@ class LLM(ABC):
             so a narrower value type fails against non-float parameters.
         """
         if not self.supports_temperature_top_p:
-            ignored = {
-                name: value
-                for name, value in (("temperature", temperature), ("top_p", top_p))
-                if value is not None
-            }
-            if ignored:
-                logger.warning(
-                    "%s/%s does not accept sampling parameters; ignoring %s. "
-                    "Remove them, or use a model whose config sets "
-                    "supports_temperature_top_p: true.",
-                    self.provider,
-                    self.model,
-                    ", ".join(f"{k}={v}" for k, v in ignored.items()),
-                )
             return {}
 
         params: dict[str, Any] = {}
@@ -971,6 +1015,7 @@ class LLM(ABC):
         *,
         max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
+        images: tuple[ImageInput, ...] = (),
     ) -> LLMResponse:
         """Get a plain text response from the LLM.
 
@@ -988,6 +1033,8 @@ class LLM(ABC):
                 requires an output cap (Anthropic, Bedrock) act on it.
             caller_metadata: Free-form dict forwarded to every hook via
                 :class:`HookContext`. Unused when no pipeline is configured.
+            images: Validated in-memory images to analyze. Supported providers
+                translate these into native multimodal content blocks.
 
         Returns:
             LLMResponse containing the text content and usage metrics.
@@ -997,7 +1044,19 @@ class LLM(ABC):
             ResponseTruncatedError: If the response hit the output cap.
             Exception: If the API request fails after retries.
         """
+
         async def impl(prompt: str) -> LLMResponse:
+            self._validate_images(images)
+            if images:
+                return await self._get_response_with_images_impl(
+                    prompt,
+                    images,
+                    system_prompt,
+                    temperature,
+                    top_p,
+                    extra_headers=extra_headers,
+                    max_tokens=max_tokens,
+                )
             return await self._get_response_impl(
                 prompt,
                 system_prompt,
@@ -1007,9 +1066,7 @@ class LLM(ABC):
                 max_tokens=max_tokens,
             )
 
-        return await self._run_hooks_returning_response(
-            user_prompt, caller_metadata, impl
-        )
+        return await self._run_hooks_returning_response(user_prompt, caller_metadata, impl)
 
     async def get_response_stream(
         self,
@@ -1021,6 +1078,7 @@ class LLM(ABC):
         *,
         max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
+        images: tuple[ImageInput, ...] = (),
     ) -> LLMStreamResponse:
         """Get a streaming text response from the LLM.
 
@@ -1029,8 +1087,20 @@ class LLM(ABC):
 
         ``max_tokens`` overrides the model's configured output cap for this
         request; streaming defaults to :data:`DEFAULT_STREAM_MAX_TOKENS`.
+        ``images`` supplies in-memory image inputs on vision-capable models.
         """
         del caller_metadata
+        self._validate_images(images)
+        if images:
+            return await self._get_response_stream_with_images_impl(
+                user_prompt,
+                images,
+                system_prompt,
+                temperature,
+                top_p,
+                extra_headers=extra_headers,
+                max_tokens=max_tokens,
+            )
         return await self._get_response_stream_impl(
             user_prompt,
             system_prompt,
@@ -1061,9 +1131,7 @@ class LLM(ABC):
             captured = await impl(modified_prompt)
             return captured.content
 
-        final_text = await self.hook_pipeline.run(
-            prompt, call, caller_metadata=caller_metadata
-        )
+        final_text = await self.hook_pipeline.run(prompt, call, caller_metadata=caller_metadata)
         assert captured is not None
         if final_text == captured.content:
             return captured
@@ -1093,6 +1161,7 @@ class LLM(ABC):
         *,
         max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
+        images: tuple[ImageInput, ...] = (),
     ) -> LLMJSONResponse:
         """Get a JSON response from the LLM.
 
@@ -1104,6 +1173,7 @@ class LLM(ABC):
             temperature: Sampling temperature (0.0-2.0). Lower is more deterministic.
             top_p: Nucleus sampling parameter (0.0-1.0).
             extra_headers: Optional per-request headers merged with default_headers.
+            images: Validated in-memory images to analyze.
 
         Returns:
             LLMJSONResponse containing the parsed JSON dict and usage metrics.
@@ -1121,6 +1191,7 @@ class LLM(ABC):
             extra_headers=extra_headers,
             max_tokens=max_tokens,
             caller_metadata=caller_metadata,
+            images=images,
         )
         # Strip markdown code fencing if present
         content = response.content.replace("```json", "").replace("```", "").strip()
@@ -1154,6 +1225,7 @@ class LLM(ABC):
         *,
         max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
+        images: tuple[ImageInput, ...] = (),
     ) -> LLMStructuredResponse:
         """Get a structured response validated against a Pydantic model.
 
@@ -1166,6 +1238,7 @@ class LLM(ABC):
             system_prompt: Optional system prompt to set context/behavior.
             temperature: Sampling temperature (0.0-2.0). Lower is more deterministic.
             top_p: Nucleus sampling parameter (0.0-1.0).
+            images: Validated in-memory images to analyze.
 
         Returns:
             LLMStructuredResponse containing the validated Pydantic model instance.
@@ -1199,6 +1272,7 @@ class LLM(ABC):
             extra_headers=extra_headers,
             max_tokens=max_tokens,
             caller_metadata=caller_metadata,
+            images=images,
         )
         parsed_content = response_model.model_validate_json(response.content)
 
@@ -1227,6 +1301,7 @@ class LLM(ABC):
         *,
         max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
+        images: tuple[ImageInput, ...] = (),
         **kwargs: Any,
     ) -> LLMResponse:
         """Get a structured JSON response validated against a raw JSON schema.
@@ -1245,6 +1320,7 @@ class LLM(ABC):
             top_p: Nucleus sampling parameter (0.0-1.0).
             extra_headers: Optional per-request headers merged with default_headers.
             caller_metadata: Free-form dict forwarded to every hook.
+            images: Validated in-memory images to analyze.
             **kwargs: Reserved for future provider-specific passthrough arguments.
 
         Returns:
@@ -1256,6 +1332,20 @@ class LLM(ABC):
         ensure_no_unexpected_kwargs(kwargs)
 
         async def impl(prompt: str) -> LLMResponse:
+            self._validate_images(images)
+            if images:
+                return await self._get_json_schema_response_with_images_retried(
+                    user_prompt=prompt,
+                    images=images,
+                    response_schema=response_schema,
+                    system_prompt=system_prompt,
+                    schema_name=schema_name,
+                    schema_description=schema_description,
+                    temperature=temperature,
+                    top_p=top_p,
+                    extra_headers=extra_headers,
+                    max_tokens=max_tokens,
+                )
             return await self._get_json_schema_response_retried(
                 user_prompt=prompt,
                 response_schema=response_schema,
@@ -1268,9 +1358,50 @@ class LLM(ABC):
                 max_tokens=max_tokens,
             )
 
-        return await self._run_hooks_returning_response(
-            user_prompt, caller_metadata, impl
+        return await self._run_hooks_returning_response(user_prompt, caller_metadata, impl)
+
+    @retry_provider_call
+    async def _get_json_schema_response_with_images_retried(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        response_schema: dict[str, Any],
+        system_prompt: str | None = None,
+        schema_name: str = "Response",
+        schema_description: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        return await self._get_json_schema_response_with_images(
+            user_prompt=user_prompt,
+            images=images,
+            response_schema=response_schema,
+            system_prompt=system_prompt,
+            schema_name=schema_name,
+            schema_description=schema_description,
+            temperature=temperature,
+            top_p=top_p,
+            extra_headers=extra_headers,
+            max_tokens=max_tokens,
         )
+
+    async def _get_json_schema_response_with_images(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        response_schema: dict[str, Any],
+        system_prompt: str | None = None,
+        schema_name: str = "Response",
+        schema_description: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        """Provider implementation for structured image-understanding calls."""
+        raise InputModalityUnsupported(self.provider, self.model, "image")
 
     @retry_provider_call
     async def _get_json_schema_response_retried(

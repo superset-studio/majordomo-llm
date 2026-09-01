@@ -13,6 +13,8 @@ A unified Python interface for multiple LLM providers with automatic cost tracki
 - **Streaming** - Real-time token-by-token output via `get_response_stream()` with async iteration
 - **Cost Tracking** - Automatic calculation of input/output token costs per request
 - **Structured Outputs** - Native support for Pydantic models and raw JSON Schema dicts
+- **Image Understanding** - Send validated JPEG, PNG, GIF, or WebP inputs to Anthropic, OpenAI, and Gemini while keeping the text, JSON, structured, and streaming response APIs
+- **Image Generation & Editing** - Generate or edit images through OpenAI and Gemini with decoded byte responses and modality-specific cost tracking
 - **Automatic Retries** - Built-in exponential backoff retry logic using tenacity
 - **Output Caps** - Per-model `max_tokens` in config plus a per-request override, and a raised `ResponseTruncatedError` when a response is cut off, instead of silently truncated content
 - **Automatic Fallback** - Cascade across providers with `LLMCascade` for resilience
@@ -66,6 +68,118 @@ async def main():
 
 asyncio.run(main())
 ```
+
+### Image Understanding
+
+```python
+from pathlib import Path
+
+from majordomo_llm import ImageInput, get_llm_instance
+
+llm = get_llm_instance("anthropic", "claude-sonnet-5")
+response = await llm.get_response(
+    "Describe the important details in this image.",
+    images=(
+        ImageInput(
+            data=Path("photo.jpg").read_bytes(),
+            media_type="image/jpeg",
+        ),
+    ),
+)
+print(response.content)
+```
+
+The same `images=` argument works with streaming, JSON, and Pydantic structured
+responses. Image bytes are sent directly to the provider; majordomo-llm never
+fetches URLs. Request logging records only MIME type, size, and SHA-256—not image
+content.
+
+### Image Generation and Editing
+
+```python
+from pathlib import Path
+
+from majordomo_llm import ImageInput, get_image_instance
+
+generator = get_image_instance("openai", "gpt-image-2")
+generated = await generator.generate(
+    "A watercolor lighthouse at dusk",
+    aspect_ratio="3:2",
+    output_format="png",
+)
+Path("lighthouse.png").write_bytes(generated.images[0].data)
+
+edited = await generator.edit(
+    "Turn the daytime scene into a moonlit scene",
+    images=(ImageInput(Path("photo.png").read_bytes(), "image/png"),),
+)
+Path("edited.jpg").write_bytes(edited.images[0].data)
+print(f"Cost: ${edited.total_cost:.6f}")
+```
+
+Use `get_supported_image_providers()` and `get_supported_image_models(provider)`
+to discover generation models. Image-generation configuration is separate from
+text-model discovery because its response and pricing contracts differ.
+
+Use `ImageCascade` for ordered generation or editing failover. Each child model
+performs its own retries before the cascade advances. Provider failures, malformed
+image responses, and unsupported provider options advance to the next model;
+invalid caller input does not.
+
+```python
+from majordomo_llm import ImageCascade
+
+generator = ImageCascade([
+    ("openai", "gpt-image-2"),
+    ("gemini", "gemini-3.1-flash-image"),
+])
+response = await generator.generate("A watercolor lighthouse")
+```
+
+Wrap an image model with `LoggingImageModel` to record metrics asynchronously
+through the existing database and storage adapters. Image inputs and generated
+outputs are logged as MIME type, byte length, and SHA-256 only; raw bytes are
+never copied into logs.
+
+```python
+from majordomo_llm.logging import LoggingImageModel
+
+logged = LoggingImageModel(generator, database, storage)
+response = await logged.generate("A watercolor lighthouse")
+await logged.close()
+```
+
+Use a separate typed `ImageHookPipeline` for prompt policy, request limits, and
+decoded-image integrity checks. Hooks receive an immutable `ImageHookRequest`
+before generation and the typed `ImageResponse` afterward. They can pass, warn,
+block, replace the request or response, or explicitly ask an `ImageCascade` to
+try its next provider.
+
+```python
+from majordomo_llm import (
+    ImageHookPipeline,
+    ImageIntegrityHook,
+    ImagePromptRegexHook,
+    ImageRequestLimitsHook,
+)
+
+pipeline = ImageHookPipeline([
+    ImagePromptRegexHook("secrets", pattern=r"secret", action="block"),
+    ImageRequestLimitsHook("limits", max_count=1, max_total_input_bytes=10_000_000),
+    ImageIntegrityHook("integrity", max_pixels=20_000_000),
+])
+generator = get_image_instance(
+    "openai", "gpt-image-2", hook_pipeline=pipeline
+)
+response = await generator.generate(
+    "A watercolor lighthouse",
+    caller_metadata={"tenant_id": "acme"},
+)
+```
+
+`ImageIntegrityHook` blocks invalid reference images before spend. If a generated
+image is corrupt, mislabeled, or over the pixel limit, it requests the next model
+from an `ImageCascade`; on a direct model it raises `ImageHookRetryRequested`.
 
 ### JSON Response
 
@@ -317,8 +431,8 @@ Models whose deployment rejects these parameters never receive them — that cov
 every current OpenAI and Anthropic flagship, plus deployments that pin their values
 (Moonshot's Kimi SKUs require `temperature=1` / `top_p=0.95`). Those models set
 `supports_temperature_top_p: false` in `llm_config.yaml`. Passing a value to one of
-them logs a warning and the call proceeds without it, rather than failing — a cascade
-can legitimately mix models that do and do not accept sampling parameters.
+them is silently ignored and the call proceeds without it, rather than failing — a
+cascade can legitimately mix models that do and do not accept sampling parameters.
 
 ### Output Cap (`max_tokens`)
 

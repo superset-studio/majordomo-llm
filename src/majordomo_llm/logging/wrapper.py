@@ -1,6 +1,7 @@
 """Logging wrapper for LLM instances."""
 
 import asyncio
+import hashlib
 from datetime import UTC, datetime
 from typing import Any, TypeVar
 from uuid import uuid4
@@ -9,6 +10,7 @@ from pydantic import BaseModel
 
 from majordomo_llm.base import (
     LLM,
+    ImageInput,
     LLMJSONResponse,
     LLMResponse,
     LLMStreamResponse,
@@ -60,6 +62,7 @@ class LoggingLLM(LLM):
             output_cost=llm.output_cost,
             supports_temperature_top_p=llm.supports_temperature_top_p,
             use_web_search=llm.use_web_search,
+            supports_image_input=llm.supports_image_input,
         )
         self._llm = llm
         self._database = database
@@ -77,8 +80,7 @@ class LoggingLLM(LLM):
     ) -> LLMResponse:
         """Unused — :meth:`get_response` overrides the public method directly."""
         raise NotImplementedError(
-            "LoggingLLM logs at the public method layer; _get_response_impl "
-            "is never called"
+            "LoggingLLM logs at the public method layer; _get_response_impl is never called"
         )
 
     async def _get_response_stream_impl(
@@ -92,8 +94,7 @@ class LoggingLLM(LLM):
     ) -> LLMStreamResponse:
         """Unused — :meth:`get_response_stream` overrides the public method directly."""
         raise NotImplementedError(
-            "LoggingLLM logs at the public method layer; _get_response_stream_impl "
-            "is never called"
+            "LoggingLLM logs at the public method layer; _get_response_stream_impl is never called"
         )
 
     async def _log_request(
@@ -168,6 +169,7 @@ class LoggingLLM(LLM):
         *,
         max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
+        images: tuple[ImageInput, ...] = (),
     ) -> LLMResponse:
         """Get a plain text response from the LLM with logging."""
         request_body = {
@@ -176,14 +178,19 @@ class LoggingLLM(LLM):
             "temperature": temperature,
             "top_p": top_p,
             "max_tokens": max_tokens,
+            "images": _image_metadata(images),
         }
 
         try:
             response = await self._llm.get_response(
-                user_prompt, system_prompt, temperature, top_p,
+                user_prompt,
+                system_prompt,
+                temperature,
+                top_p,
                 extra_headers=extra_headers,
                 max_tokens=max_tokens,
                 caller_metadata=caller_metadata,
+                images=images,
             )
             self._fire_and_forget(
                 request_body=request_body,
@@ -213,6 +220,7 @@ class LoggingLLM(LLM):
         *,
         max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
+        images: tuple[ImageInput, ...] = (),
     ) -> LLMStreamResponse:
         """Get a streaming text response from the LLM with logging."""
         del caller_metadata
@@ -222,13 +230,18 @@ class LoggingLLM(LLM):
             "temperature": temperature,
             "top_p": top_p,
             "max_tokens": max_tokens,
+            "images": _image_metadata(images),
         }
 
         try:
             stream = await self._llm.get_response_stream(
-                user_prompt, system_prompt, temperature, top_p,
+                user_prompt,
+                system_prompt,
+                temperature,
+                top_p,
                 extra_headers=extra_headers,
                 max_tokens=max_tokens,
+                images=images,
             )
         except Exception as e:
             self._fire_and_forget(
@@ -272,6 +285,7 @@ class LoggingLLM(LLM):
         *,
         max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
+        images: tuple[ImageInput, ...] = (),
     ) -> LLMJSONResponse:
         """Get a JSON response from the LLM with logging."""
         request_body = {
@@ -280,14 +294,19 @@ class LoggingLLM(LLM):
             "temperature": temperature,
             "top_p": top_p,
             "max_tokens": max_tokens,
+            "images": _image_metadata(images),
         }
 
         try:
             response = await self._llm.get_json_response(
-                user_prompt, system_prompt, temperature, top_p,
+                user_prompt,
+                system_prompt,
+                temperature,
+                top_p,
                 extra_headers=extra_headers,
                 max_tokens=max_tokens,
                 caller_metadata=caller_metadata,
+                images=images,
             )
             self._fire_and_forget(
                 request_body=request_body,
@@ -318,6 +337,7 @@ class LoggingLLM(LLM):
         *,
         max_tokens: int | None = None,
         caller_metadata: dict[str, Any] | None = None,
+        images: tuple[ImageInput, ...] = (),
     ) -> LLMStructuredResponse:
         """Get a structured response validated against a Pydantic model with logging."""
         request_body = {
@@ -327,14 +347,20 @@ class LoggingLLM(LLM):
             "temperature": temperature,
             "top_p": top_p,
             "max_tokens": max_tokens,
+            "images": _image_metadata(images),
         }
 
         try:
             response = await self._llm.get_structured_json_response(
-                response_model, user_prompt, system_prompt, temperature, top_p,
+                response_model,
+                user_prompt,
+                system_prompt,
+                temperature,
+                top_p,
                 extra_headers=extra_headers,
                 max_tokens=max_tokens,
                 caller_metadata=caller_metadata,
+                images=images,
             )
             self._fire_and_forget(
                 request_body=request_body,
@@ -365,3 +391,15 @@ class LoggingLLM(LLM):
         await self._database.close()
         if self._storage:
             await self._storage.close()
+
+
+def _image_metadata(images: tuple[ImageInput, ...]) -> list[dict[str, str | int]]:
+    """Return non-sensitive image metadata suitable for JSON request logs."""
+    return [
+        {
+            "media_type": image.media_type,
+            "size_bytes": len(image.data),
+            "sha256": hashlib.sha256(image.data).hexdigest(),
+        }
+        for image in images
+    ]

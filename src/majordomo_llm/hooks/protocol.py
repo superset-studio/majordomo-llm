@@ -35,7 +35,7 @@ class HookVerdict:
 
     hook_name: str
     verdict: Literal["pass", "fail", "warn"]
-    action_taken: Literal["pass", "block", "warn", "redact"]
+    action_taken: Literal["pass", "block", "warn", "redact", "modify", "retry"]
     reason: str | None = None
     latency_ms: int | None = None
 

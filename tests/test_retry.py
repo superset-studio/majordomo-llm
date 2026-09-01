@@ -6,6 +6,7 @@ import openai
 import pytest
 from cohere.core.api_error import ApiError as CohereApiError
 from google.genai import errors as genai_errors
+from google.genai._gaos.lib.compat_errors import APIError as InteractionsAPIError
 
 from majordomo_llm.exceptions import ProviderError
 from majordomo_llm.retry import (
@@ -19,6 +20,15 @@ from majordomo_llm.retry import (
 def _httpx_response(status_code: int) -> httpx.Response:
     request = httpx.Request("POST", "https://api.example.test")
     return httpx.Response(status_code, request=request, json={"error": "test"})
+
+
+def _interactions_error(status_code: int) -> InteractionsAPIError:
+    return InteractionsAPIError.generate(
+        status_code=status_code,
+        body={"error": {"message": "test"}},
+        message="test",
+        response=_httpx_response(status_code),
+    )
 
 
 def test_extracts_status_codes_from_supported_sdk_errors():
@@ -37,11 +47,13 @@ def test_extracts_status_codes_from_supported_sdk_errors():
         408,
         {"error": {"message": "timeout", "status": "DEADLINE_EXCEEDED"}},
     )
+    interactions_error = _interactions_error(503)
     cohere_error = CohereApiError(status_code=503, body={"message": "unavailable"})
 
     assert get_provider_error_status_code(anthropic_error) == 529
     assert get_provider_error_status_code(openai_error) == 500
     assert get_provider_error_status_code(gemini_error) == 408
+    assert get_provider_error_status_code(interactions_error) == 503
     assert get_provider_error_status_code(cohere_error) == 503
 
 
@@ -67,6 +79,30 @@ def test_does_not_retry_non_transient_or_availability_first_status_codes(status_
         body={"error": "non-retryable"},
     )
     error = ProviderError("Anthropic failed", provider="anthropic", original_error=original_error)
+
+    assert not is_retryable_provider_error(error)
+
+
+@pytest.mark.parametrize("status_code", [408, 500, 502, 503, 504])
+def test_retries_transient_gemini_interactions_status_codes(status_code):
+    """Should classify transient Interactions failures using their status_code."""
+    error = ProviderError(
+        "Gemini Interactions failed",
+        provider="gemini",
+        original_error=_interactions_error(status_code),
+    )
+
+    assert is_retryable_provider_error(error)
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 422, 429, 529])
+def test_does_not_retry_permanent_gemini_interactions_status_codes(status_code):
+    """Should preserve the shared fail-fast policy for Interactions failures."""
+    error = ProviderError(
+        "Gemini Interactions failed",
+        provider="gemini",
+        original_error=_interactions_error(status_code),
+    )
 
     assert not is_retryable_provider_error(error)
 

@@ -1,5 +1,6 @@
 """OpenAI LLM provider implementation."""
 
+import base64
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -8,6 +9,7 @@ import openai
 
 from majordomo_llm.base import (
     LLM,
+    ImageInput,
     LLMResponse,
     LLMStreamResponse,
     _StreamState,
@@ -52,6 +54,7 @@ class OpenAI(LLM):
         output_cost: float,
         supports_temperature_top_p: bool = True,
         use_web_search: bool = False,
+        supports_image_input: bool = False,
         *,
         cached_input_cost: float | None = None,
         cache_write_cost: float | None = None,
@@ -68,6 +71,7 @@ class OpenAI(LLM):
             output_cost: Cost per million output tokens in USD.
             supports_temperature_top_p: Whether temperature/top_p are supported.
             use_web_search: Enable Responses API ``web_search_preview`` tool.
+            supports_image_input: Whether this model accepts image inputs.
             cached_input_cost: Cost per million cache-read tokens in USD. OpenAI
                 reports cached tokens as a subset of input tokens, so this
                 re-prices them below ``input_cost``.
@@ -91,6 +95,7 @@ class OpenAI(LLM):
             cache_write_cost=cache_write_cost,
             supports_temperature_top_p=supports_temperature_top_p,
             use_web_search=use_web_search,
+            supports_image_input=supports_image_input,
             api_key=resolved_api_key,
             api_key_alias=api_key_alias,
             base_url=base_url,
@@ -127,6 +132,26 @@ class OpenAI(LLM):
             user_prompt, system_prompt, temperature, top_p, extra_headers=extra_headers
         )
 
+    @retry_provider_call
+    async def _get_response_with_images_impl(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        return await self._get_response(
+            user_prompt,
+            system_prompt,
+            temperature,
+            top_p,
+            extra_headers=extra_headers,
+            images=images,
+        )
+
     async def _get_response(
         self,
         user_prompt: str,
@@ -134,6 +159,7 @@ class OpenAI(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        images: tuple[ImageInput, ...] = (),
     ) -> LLMResponse:
         """Internal method to get a response from OpenAI."""
         start_time = time.time()
@@ -142,7 +168,7 @@ class OpenAI(LLM):
             response = await self.client.responses.create(
                 model=self.model,
                 instructions=system_prompt,
-                input=user_prompt,
+                input=_openai_input(user_prompt, images),
                 extra_headers=extra_headers,
                 **web_search_kwargs,
                 **self._sampling_params(temperature, top_p),
@@ -225,6 +251,52 @@ class OpenAI(LLM):
 
         return LLMStreamResponse(stream=generator(), state=state, llm=self)
 
+    async def _get_response_stream_with_images_impl(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMStreamResponse:
+        state = _StreamState()
+        web_search_kwargs = self._web_search_kwargs()
+        try:
+            response = await self.client.responses.create(
+                model=self.model,
+                instructions=system_prompt,
+                input=_openai_input(user_prompt, images),
+                stream=True,
+                extra_headers=extra_headers,
+                **web_search_kwargs,
+                **self._sampling_params(temperature, top_p),
+            )
+        except openai.APIError as e:
+            raise ProviderError(
+                f"OpenAI API error: {e}", provider="openai", original_error=e
+            ) from e
+
+        async def generator() -> AsyncIterator[str]:
+            try:
+                async for event in response:
+                    if event.type == "response.output_text.delta":
+                        yield event.delta
+                    elif event.type == "response.completed":
+                        assert event.response.usage is not None
+                        state.input_tokens = event.response.usage.input_tokens
+                        state.output_tokens = event.response.usage.output_tokens
+                        state.cached_tokens = (
+                            event.response.usage.input_tokens_details.cached_tokens
+                        )
+            except openai.APIError as e:
+                raise ProviderError(
+                    f"OpenAI API error: {e}", provider="openai", original_error=e
+                ) from e
+
+        return LLMStreamResponse(stream=generator(), state=state, llm=self)
+
     async def _get_json_schema_response(
         self,
         user_prompt: str,
@@ -238,6 +310,56 @@ class OpenAI(LLM):
         max_tokens: int | None = None,
     ) -> LLMResponse:
         """OpenAI-specific implementation using structured outputs with JSON Schema."""
+        return await self._get_json_schema_response_common(
+            user_prompt=user_prompt,
+            images=(),
+            response_schema=response_schema,
+            system_prompt=system_prompt,
+            schema_name=schema_name,
+            schema_description=schema_description,
+            temperature=temperature,
+            top_p=top_p,
+            extra_headers=extra_headers,
+        )
+
+    async def _get_json_schema_response_with_images(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        response_schema: dict[str, Any],
+        system_prompt: str | None = None,
+        schema_name: str = "Response",
+        schema_description: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        return await self._get_json_schema_response_common(
+            user_prompt=user_prompt,
+            images=images,
+            response_schema=response_schema,
+            system_prompt=system_prompt,
+            schema_name=schema_name,
+            schema_description=schema_description,
+            temperature=temperature,
+            top_p=top_p,
+            extra_headers=extra_headers,
+        )
+
+    async def _get_json_schema_response_common(
+        self,
+        *,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        response_schema: dict[str, Any],
+        system_prompt: str | None,
+        schema_name: str,
+        schema_description: str | None,
+        temperature: float | None,
+        top_p: float | None,
+        extra_headers: dict[str, str] | None,
+    ) -> LLMResponse:
         start_time = time.time()
         strict_schema = _enforce_openai_strict_schema(response_schema)
         response_format: dict[str, object] = {
@@ -255,7 +377,7 @@ class OpenAI(LLM):
             response = await self.client.responses.create(
                 model=self.model,
                 instructions=system_prompt,
-                input=user_prompt,
+                input=_openai_input(user_prompt, images),
                 text=text_config,
                 extra_headers=extra_headers,
                 **web_search_kwargs,
@@ -272,11 +394,14 @@ class OpenAI(LLM):
         assert response.usage is not None
         input_tokens = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
-        cached_tokens = getattr(
-            getattr(response.usage, "input_tokens_details", None),
-            "cached_tokens",
-            0,
-        ) or 0
+        cached_tokens = (
+            getattr(
+                getattr(response.usage, "input_tokens_details", None),
+                "cached_tokens",
+                0,
+            )
+            or 0
+        )
         input_cost, output_cost, total_cost = self._calculate_costs(
             input_tokens, output_tokens, cached_tokens
         )
@@ -291,3 +416,20 @@ class OpenAI(LLM):
             total_cost=total_cost,
             response_time=execution_time,
         )
+
+
+def _openai_input(user_prompt: str, images: tuple[ImageInput, ...]) -> Any:
+    """Build a Responses API input while preserving the text-only fast path."""
+    if not images:
+        return user_prompt
+    content: list[dict[str, str]] = []
+    for image in images:
+        encoded = base64.b64encode(image.data).decode("ascii")
+        content.append(
+            {
+                "type": "input_image",
+                "image_url": f"data:{image.media_type};base64,{encoded}",
+            }
+        )
+    content.append({"type": "input_text", "text": user_prompt})
+    return [{"role": "user", "content": content}]

@@ -1,5 +1,6 @@
 """Anthropic (Claude) LLM provider implementation."""
 
+import base64
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -19,6 +20,7 @@ from anthropic.types import (
 from majordomo_llm.base import (
     DEFAULT_MAX_TOKENS,
     LLM,
+    ImageInput,
     LLMResponse,
     LLMStreamResponse,
     _StreamState,
@@ -81,6 +83,7 @@ class Anthropic(LLM):
         supports_temperature_top_p: bool = True,
         use_web_search: bool = False,
         supports_structured_outputs: bool = False,
+        supports_image_input: bool = False,
         reasoning_effort: str | None = None,
         thinking: str | None = None,
         *,
@@ -105,6 +108,7 @@ class Anthropic(LLM):
                 structured outputs (constrained decoding via
                 ``output_config.format``). When False, structured JSON requests
                 fall back to forced tool calling. Defaults to False.
+            supports_image_input: Whether this model accepts image inputs.
             reasoning_effort: Optional ``output_config.effort`` level applied to
                 every request — one of ``low``, ``medium``, ``high``, ``xhigh``,
                 ``max``. Controls thinking depth and overall token spend on the
@@ -165,6 +169,7 @@ class Anthropic(LLM):
             use_prompt_caching=use_prompt_caching,
             supports_temperature_top_p=supports_temperature_top_p,
             use_web_search=use_web_search,
+            supports_image_input=supports_image_input,
             api_key=resolved_api_key,
             api_key_alias=api_key_alias,
             base_url=base_url,
@@ -254,9 +259,7 @@ class Anthropic(LLM):
 
         tools: list[Any] = []
         if self.use_web_search:
-            tools.append(
-                WebSearchTool20250305Param(type="web_search_20250305", name="web_search")
-            )
+            tools.append(WebSearchTool20250305Param(type="web_search_20250305", name="web_search"))
 
         resolved_max_tokens = self._resolve_nonstreaming_max_tokens(max_tokens)
 
@@ -308,6 +311,71 @@ class Anthropic(LLM):
             output_cost=output_cost,
             total_cost=total_cost,
             response_time=execution_time,
+            tool_use_cost=tool_use_cost,
+            deprecation_warning=self.deprecation_warning,
+            stop_reason=response_message.stop_reason,
+        )
+
+    @retry_provider_call
+    async def _get_response_with_images_impl(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        if system_prompt is None:
+            system_prompt = "You are a helpful assistant"
+        start_time = time.time()
+        resolved_max_tokens = self._resolve_nonstreaming_max_tokens(max_tokens)
+        tools: list[Any] = []
+        if self.use_web_search:
+            tools.append(WebSearchTool20250305Param(type="web_search_20250305", name="web_search"))
+        try:
+            response_message = await self.client.messages.create(
+                model=self.model,
+                max_tokens=resolved_max_tokens,
+                system=_anthropic_system_prompt(system_prompt, self.use_prompt_caching),
+                messages=_anthropic_user_message(user_prompt, images),
+                tools=tools,
+                tool_choice=ToolChoiceAutoParam(type="auto"),
+                **self._config_create_kwargs(),
+                extra_headers=extra_headers,
+                **self._sampling_params(temperature, top_p),
+            )
+        except anthropic.APIError as e:
+            raise ProviderError(
+                f"Anthropic API error: {e}", provider="anthropic", original_error=e
+            ) from e
+
+        content = "\n".join(
+            block.text for block in response_message.content if block.type == "text"
+        )
+        input_tokens = response_message.usage.input_tokens
+        output_tokens = response_message.usage.output_tokens
+        self._check_truncation(
+            response_message.stop_reason, resolved_max_tokens, output_tokens, content
+        )
+        cached_tokens = response_message.usage.cache_read_input_tokens or 0
+        cache_creation_tokens = response_message.usage.cache_creation_input_tokens or 0
+        input_cost, output_cost, total_cost = self._calculate_costs(
+            input_tokens, output_tokens, cached_tokens, cache_creation_tokens
+        )
+        tool_use_cost = self._compute_web_search_cost(response_message)
+        total_cost += tool_use_cost
+        return LLMResponse(
+            content=content,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+            input_cost=input_cost,
+            output_cost=output_cost,
+            total_cost=total_cost,
+            response_time=time.time() - start_time,
             tool_use_cost=tool_use_cost,
             deprecation_warning=self.deprecation_warning,
             stop_reason=response_message.stop_reason,
@@ -372,9 +440,59 @@ class Anthropic(LLM):
             # Raised after the last chunk is yielded, so a truncated stream fails
             # the same way a truncated non-streaming call does rather than ending
             # quietly mid-sentence.
-            self._check_truncation(
-                state.stop_reason, resolved_max_tokens, state.output_tokens, ""
+            self._check_truncation(state.stop_reason, resolved_max_tokens, state.output_tokens, "")
+
+        return LLMStreamResponse(stream=generator(), state=state, llm=self)
+
+    async def _get_response_stream_with_images_impl(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMStreamResponse:
+        if system_prompt is None:
+            system_prompt = "You are a helpful assistant"
+        state = _StreamState()
+        resolved_max_tokens = self._resolve_max_tokens(max_tokens, streaming=True)
+        try:
+            response = await self.client.messages.create(
+                model=self.model,
+                max_tokens=resolved_max_tokens,
+                system=_anthropic_system_prompt(system_prompt, self.use_prompt_caching),
+                messages=_anthropic_user_message(user_prompt, images),
+                stream=True,
+                **self._config_create_kwargs(),
+                extra_headers=extra_headers,
+                **self._sampling_params(temperature, top_p),
             )
+        except anthropic.APIError as e:
+            raise ProviderError(
+                f"Anthropic API error: {e}", provider="anthropic", original_error=e
+            ) from e
+
+        async def generator() -> AsyncIterator[str]:
+            try:
+                async for event in response:
+                    if event.type == "message_start":
+                        state.input_tokens = event.message.usage.input_tokens
+                        state.cached_tokens = event.message.usage.cache_read_input_tokens or 0
+                        state.cache_creation_tokens = (
+                            event.message.usage.cache_creation_input_tokens or 0
+                        )
+                    elif event.type == "content_block_delta" and event.delta.type == "text_delta":
+                        yield event.delta.text
+                    elif event.type == "message_delta":
+                        state.output_tokens = event.usage.output_tokens
+                        state.stop_reason = event.delta.stop_reason
+            except anthropic.APIError as e:
+                raise ProviderError(
+                    f"Anthropic API error: {e}", provider="anthropic", original_error=e
+                ) from e
+            self._check_truncation(state.stop_reason, resolved_max_tokens, state.output_tokens, "")
 
         return LLMStreamResponse(stream=generator(), state=state, llm=self)
 
@@ -389,6 +507,60 @@ class Anthropic(LLM):
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
         max_tokens: int | None = None,
+    ) -> LLMResponse:
+        """Anthropic structured JSON output."""
+        return await self._get_json_schema_response_common(
+            user_prompt=user_prompt,
+            images=(),
+            response_schema=response_schema,
+            system_prompt=system_prompt,
+            schema_name=schema_name,
+            schema_description=schema_description,
+            temperature=temperature,
+            top_p=top_p,
+            extra_headers=extra_headers,
+            max_tokens=max_tokens,
+        )
+
+    async def _get_json_schema_response_with_images(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        response_schema: dict[str, Any],
+        system_prompt: str | None = None,
+        schema_name: str = "Response",
+        schema_description: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        return await self._get_json_schema_response_common(
+            user_prompt=user_prompt,
+            images=images,
+            response_schema=response_schema,
+            system_prompt=system_prompt,
+            schema_name=schema_name,
+            schema_description=schema_description,
+            temperature=temperature,
+            top_p=top_p,
+            extra_headers=extra_headers,
+            max_tokens=max_tokens,
+        )
+
+    async def _get_json_schema_response_common(
+        self,
+        *,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        response_schema: dict[str, Any],
+        system_prompt: str | None,
+        schema_name: str,
+        schema_description: str | None,
+        temperature: float | None,
+        top_p: float | None,
+        extra_headers: dict[str, str] | None,
+        max_tokens: int | None,
     ) -> LLMResponse:
         """Anthropic structured JSON output.
 
@@ -412,6 +584,7 @@ class Anthropic(LLM):
                 schema_description=schema_description,
                 extra_headers=extra_headers,
                 max_tokens=resolved_max_tokens,
+                images=images,
             )
             content = _extract_tool_use_content(response.content, schema_name)
             return self._finalize_json_schema_response(
@@ -427,6 +600,7 @@ class Anthropic(LLM):
                 top_p=top_p,
                 extra_headers=extra_headers,
                 max_tokens=resolved_max_tokens,
+                images=images,
             )
 
         return await self._forced_tool_json_schema_response(
@@ -439,6 +613,7 @@ class Anthropic(LLM):
             top_p=top_p,
             extra_headers=extra_headers,
             max_tokens=resolved_max_tokens,
+            images=images,
         )
 
     async def _native_json_schema_response(
@@ -450,6 +625,7 @@ class Anthropic(LLM):
         top_p: float | None,
         extra_headers: dict[str, str] | None,
         max_tokens: int,
+        images: tuple[ImageInput, ...] = (),
     ) -> LLMResponse:
         """Native structured outputs via ``output_config.format`` (constrained decoding).
 
@@ -468,7 +644,7 @@ class Anthropic(LLM):
 
         if system_prompt is None:
             system_prompt = "You are a helpful assistant."
-        messages = _anthropic_user_message(user_prompt)
+        messages = _anthropic_user_message(user_prompt, images)
         system_message = _anthropic_system_prompt(system_prompt, self.use_prompt_caching)
 
         start_time = time.time()
@@ -511,6 +687,7 @@ class Anthropic(LLM):
         top_p: float | None,
         extra_headers: dict[str, str] | None,
         max_tokens: int,
+        images: tuple[ImageInput, ...] = (),
     ) -> LLMResponse:
         """Forced-tool fallback for models without native structured outputs.
 
@@ -527,7 +704,7 @@ class Anthropic(LLM):
         else:
             system_prompt = f"{system_prompt}\n\n{tool_instruction}"
 
-        messages = _anthropic_user_message(user_prompt)
+        messages = _anthropic_user_message(user_prompt, images)
         system_message = _anthropic_system_prompt(system_prompt, self.use_prompt_caching)
         tools = [
             ToolParam(
@@ -612,6 +789,7 @@ class Anthropic(LLM):
         schema_description: str | None = None,
         extra_headers: dict[str, str] | None = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        images: tuple[ImageInput, ...] = (),
     ) -> tuple[Any, float]:
         """Helper for web search with raw JSON-schema structured response."""
         structured_response_tool = ToolParam(
@@ -632,7 +810,7 @@ class Anthropic(LLM):
         else:
             system_prompt = f"{system_prompt}\n\n{tool_instruction}"
 
-        messages = _anthropic_user_message(user_prompt)
+        messages = _anthropic_user_message(user_prompt, images)
         system_message = _anthropic_system_prompt(system_prompt, self.use_prompt_caching)
 
         start_time = time.time()
@@ -662,13 +840,15 @@ class Anthropic(LLM):
                         logger.info("Web search initiated (turn %d)", search_count + 1)
                         search_count += 1
                         current_messages.append({"role": "assistant", "content": response.content})
-                        current_messages.append({
-                            "role": "user",
-                            "content": (
-                                "Continue with your analysis. Use the structured response "
-                                "tool when ready to generate the final output."
-                            ),
-                        })
+                        current_messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Continue with your analysis. Use the structured response "
+                                    "tool when ready to generate the final output."
+                                ),
+                            }
+                        )
                         continue
                 break
 
@@ -735,8 +915,25 @@ def _anthropic_system_prompt(
     return [TextBlockParam(type="text", text=system_prompt)]
 
 
-def _anthropic_user_message(user_prompt: str) -> list[MessageParam]:
+def _anthropic_user_message(
+    user_prompt: str, images: tuple[ImageInput, ...] = ()
+) -> list[MessageParam]:
     """Create Anthropic user message."""
+    if images:
+        content: list[dict[str, Any]] = []
+        for image in images:
+            content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": image.media_type,
+                        "data": base64.b64encode(image.data).decode("ascii"),
+                    },
+                }
+            )
+        content.append({"type": "text", "text": user_prompt})
+        return [MessageParam(role="user", content=content)]  # type: ignore[typeddict-item]
     return [
         MessageParam(
             role="user",

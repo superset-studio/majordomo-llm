@@ -1,6 +1,6 @@
 [project]
 name = "majordomo-llm"
-version = "0.22.1"
+version = "0.23.0"
 description = "Unified Python interface for multiple LLM providers with cost tracking"
 readme = "README.md"
 license = {text = "MIT"}
@@ -46,6 +46,7 @@ dependencies = [
     "google-genai>=1.60.0",
     "jsonschema>=4.26.0",
     "openai>=2.15.0",
+    "pillow>=11.0.0",
     "pre-commit>=4.5.1",
     "pydantic>=2.12.5",
     "pyyaml>=6.0",

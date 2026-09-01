@@ -534,15 +534,14 @@ class TestSamplingParams:
         assert "temperature" not in call_kwargs
         assert "top_p" not in call_kwargs
 
-    async def test_warns_when_explicit_values_are_dropped(self, text_response, caplog):
+    async def test_silent_when_explicit_values_are_dropped(self, text_response, caplog):
         llm = make_llm(supports_temperature_top_p=False)
         llm.client.chat.completions.create = AsyncMock(return_value=text_response)
 
         with caplog.at_level(logging.WARNING, logger="majordomo_llm.base"):
             await llm.get_response("Say hello", temperature=0.8)
 
-        assert "does not accept sampling parameters" in caplog.text
-        assert "temperature=0.8" in caplog.text
+        assert caplog.text == ""
 
     async def test_silent_when_nothing_was_requested(self, text_response, caplog):
         llm = make_llm(supports_temperature_top_p=False)

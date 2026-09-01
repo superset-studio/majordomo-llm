@@ -27,12 +27,14 @@ from majordomo_llm.logging.adapters import (
     S3Adapter,
     SqliteAdapter,
 )
+from majordomo_llm.logging.image_wrapper import LoggingImageModel
 from majordomo_llm.logging.interfaces import DatabaseAdapter, StorageAdapter
 from majordomo_llm.logging.models import LogEntry
 from majordomo_llm.logging.wrapper import LoggingLLM
 
 __all__ = [
     "LoggingLLM",
+    "LoggingImageModel",
     "DatabaseAdapter",
     "StorageAdapter",
     "FileStorageAdapter",

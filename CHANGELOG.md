@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-09-01
+
+### Added
+
+- **Image understanding on the existing `LLM` API.** `ImageInput` carries validated in-memory JPEG, PNG, GIF, or WebP bytes, and `images=` is available on text, streaming, JSON, raw JSON Schema, and Pydantic structured calls. Anthropic, OpenAI, and Gemini map the common input into their native multimodal content blocks. Support is enabled explicitly per model with `supports_image_input: true`; the default is false for unflagged and future models. Unsupported models raise `InputModalityUnsupported` before a provider request; cascades skip incompatible members. `LoggingLLM` records only MIME type, byte length, and SHA-256 rather than raw image content.
+- **Image generation and editing.** `get_image_instance()` creates a separate `ImageModel` for OpenAI GPT Image 2 or Gemini 3.1 Flash Image models. `generate()` and `edit()` return decoded `GeneratedImage` bytes in an `ImageResponse` with modality-specific usage and cost tracking. Discovery is available through `get_supported_image_providers()`, `get_supported_image_models()`, and `get_all_image_instances()`.
+- **Image generation cascade.** `ImageCascade` provides ordered failover for both generation and editing. Each child exhausts its own retry policy before the cascade advances on provider failures, malformed image responses, or the new `ImageOptionUnsupported` capability error; caller validation and unrelated configuration errors still propagate immediately.
+- **Image generation logging.** `LoggingImageModel` records generation and editing metrics asynchronously through the existing database and storage adapters, including concrete cascade routing, modality-specific usage metadata, cost, latency, status, errors, and API-key attribution. Reference images, masks, and generated outputs are represented only by MIME type, byte length, and SHA-256; raw image bytes are never duplicated into logs.
+- **Typed image generation hooks.** `ImageHookPipeline` runs ordered before/after hooks around generation and editing with immutable `ImageHookRequest`, typed `ImageResponse`, caller metadata, verdict callbacks, request/response replacement, blocking, and explicit next-provider retry outcomes. `ImagePromptRegexHook` provides prompt block/warn/redaction, `ImageRequestLimitsHook` enforces count/payload/size policy before spend, and Pillow-backed `ImageIntegrityHook` verifies decoded formats, MIME declarations, and pixel ceilings. Corrupt inputs block immediately; corrupt provider output advances `ImageCascade` or raises `ImageHookRetryRequested` on a direct model.
+
 ## [0.22.1] - 2026-08-25
 
 ### Fixed
@@ -422,7 +432,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ProviderError` - Provider API errors
   - `ResponseParsingError` - Response parsing failures
 
-[Unreleased]: https://github.com/superset-studio/majordomo-llm/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/superset-studio/majordomo-llm/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/superset-studio/majordomo-llm/compare/v0.22.1...v0.23.0
 [0.4.0]: https://github.com/superset-studio/majordomo-llm/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/superset-studio/majordomo-llm/compare/v0.2.0...v0.3.1
 [0.2.0]: https://github.com/superset-studio/majordomo-llm/compare/v0.1.6...v0.2.0

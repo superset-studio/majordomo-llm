@@ -33,6 +33,7 @@ nav:
       - Overview: concepts/index.md
       - Streaming: concepts/streaming.md
       - Structured Outputs: concepts/structured-outputs.md
+      - Images: concepts/images.md
       - Cost Tracking & Logging: concepts/cost-tracking.md
       - Cascade Failover: concepts/cascade-failover.md
       - Custom Endpoints & Headers: concepts/custom-endpoints.md
@@ -47,5 +48,6 @@ nav:
   - API Reference:
       - Base: api/base.md
       - Providers: api/providers.md
+      - Images: api/images.md
       - Logging: api/logging.md
       - Factory & Cascade: api/factory-cascade.md

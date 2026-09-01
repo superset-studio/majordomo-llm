@@ -10,6 +10,7 @@ from google.genai import types
 
 from majordomo_llm.base import (
     LLM,
+    ImageInput,
     LLMResponse,
     LLMStreamResponse,
     _StreamState,
@@ -49,6 +50,7 @@ class Gemini(LLM):
         *,
         supports_temperature_top_p: bool = True,
         use_web_search: bool = False,
+        supports_image_input: bool = False,
         cached_input_cost: float | None = None,
         cache_write_cost: float | None = None,
         api_key: str | None = None,
@@ -64,6 +66,7 @@ class Gemini(LLM):
             output_cost: Cost per million output tokens in USD.
             supports_temperature_top_p: Whether the model supports temperature/top_p.
             use_web_search: Enable the Google Search grounding tool.
+            supports_image_input: Whether this model accepts image inputs.
             cached_input_cost: Cost per million cached-content (cache-read) tokens
                 in USD. Gemini reports cached content as a subset of prompt
                 tokens, so this re-prices them below ``input_cost``.
@@ -87,6 +90,7 @@ class Gemini(LLM):
             cache_write_cost=cache_write_cost,
             supports_temperature_top_p=True,
             use_web_search=use_web_search,
+            supports_image_input=supports_image_input,
             api_key=resolved_api_key,
             api_key_alias=api_key_alias,
             base_url=base_url,
@@ -130,9 +134,7 @@ class Gemini(LLM):
         performed.
         """
         candidates = getattr(response, "candidates", None) or []
-        grounded = sum(
-            1 for c in candidates if getattr(c, "grounding_metadata", None) is not None
-        )
+        grounded = sum(1 for c in candidates if getattr(c, "grounding_metadata", None) is not None)
         return grounded * self._GROUNDED_QUERY_COST
 
     @retry_provider_call
@@ -150,6 +152,26 @@ class Gemini(LLM):
             user_prompt, system_prompt, temperature, top_p, extra_headers=extra_headers
         )
 
+    @retry_provider_call
+    async def _get_response_with_images_impl(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        return await self._get_response(
+            user_prompt,
+            system_prompt,
+            temperature,
+            top_p,
+            extra_headers=extra_headers,
+            images=images,
+        )
+
     async def _get_response(
         self,
         user_prompt: str,
@@ -157,6 +179,7 @@ class Gemini(LLM):
         temperature: float | None = None,
         top_p: float | None = None,
         extra_headers: dict[str, str] | None = None,
+        images: tuple[ImageInput, ...] = (),
     ) -> LLMResponse:
         """Internal method to get a response from Gemini."""
         start_time = time.time()
@@ -171,7 +194,7 @@ class Gemini(LLM):
             response = await self.client.aio.models.generate_content(
                 model=self.model,
                 config=types.GenerateContentConfig(**config_kwargs),
-                contents=user_prompt,
+                contents=_gemini_contents(user_prompt, images),
             )
         except genai_errors.APIError as e:
             raise ProviderError(
@@ -241,14 +264,56 @@ class Gemini(LLM):
                     if chunk.usage_metadata:
                         state.input_tokens = chunk.usage_metadata.prompt_token_count or 0
                         state.output_tokens = chunk.usage_metadata.candidates_token_count or 0
-                        state.cached_tokens = (
-                            chunk.usage_metadata.cached_content_token_count or 0
-                        )
+                        state.cached_tokens = chunk.usage_metadata.cached_content_token_count or 0
             except genai_errors.APIError as e:
                 raise ProviderError(
                     f"Gemini API error: {e}",
                     provider="gemini",
                     original_error=e,
+                ) from e
+
+        return LLMStreamResponse(stream=generator(), state=state, llm=self)
+
+    async def _get_response_stream_with_images_impl(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMStreamResponse:
+        state = _StreamState()
+        config_kwargs: dict[str, Any] = {
+            "system_instruction": system_prompt,
+            **self._sampling_params(temperature, top_p),
+        }
+        if extra_headers:
+            config_kwargs["http_options"] = types.HttpOptions(headers=extra_headers)
+        self._apply_web_search(config_kwargs)
+        try:
+            response = await self.client.aio.models.generate_content_stream(
+                model=self.model,
+                config=types.GenerateContentConfig(**config_kwargs),
+                contents=_gemini_contents(user_prompt, images),
+            )
+        except genai_errors.APIError as e:
+            raise ProviderError(
+                f"Gemini API error: {e}", provider="gemini", original_error=e
+            ) from e
+
+        async def generator() -> AsyncIterator[str]:
+            try:
+                async for chunk in response:
+                    if chunk.text:
+                        yield chunk.text
+                    if chunk.usage_metadata:
+                        counts = _gemini_token_counts(chunk)
+                        state.input_tokens, state.output_tokens, state.cached_tokens = counts
+            except genai_errors.APIError as e:
+                raise ProviderError(
+                    f"Gemini API error: {e}", provider="gemini", original_error=e
                 ) from e
 
         return LLMStreamResponse(stream=generator(), state=state, llm=self)
@@ -266,6 +331,50 @@ class Gemini(LLM):
         max_tokens: int | None = None,
     ) -> LLMResponse:
         """Gemini-specific implementation using response schema for structured outputs."""
+        return await self._get_json_schema_response_common(
+            user_prompt=user_prompt,
+            images=(),
+            response_schema=response_schema,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            top_p=top_p,
+            extra_headers=extra_headers,
+        )
+
+    async def _get_json_schema_response_with_images(
+        self,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        response_schema: dict[str, Any],
+        system_prompt: str | None = None,
+        schema_name: str = "Response",
+        schema_description: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        return await self._get_json_schema_response_common(
+            user_prompt=user_prompt,
+            images=images,
+            response_schema=response_schema,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            top_p=top_p,
+            extra_headers=extra_headers,
+        )
+
+    async def _get_json_schema_response_common(
+        self,
+        *,
+        user_prompt: str,
+        images: tuple[ImageInput, ...],
+        response_schema: dict[str, Any],
+        system_prompt: str | None,
+        temperature: float | None,
+        top_p: float | None,
+        extra_headers: dict[str, str] | None,
+    ) -> LLMResponse:
         if self.use_web_search and not self._supports_search_with_structured_output():
             raise ConfigurationError(
                 f"Gemini model '{self.model}' does not support combining grounded "
@@ -288,7 +397,7 @@ class Gemini(LLM):
             response = await self.client.aio.models.generate_content(
                 model=self.model,
                 config=types.GenerateContentConfig(**config_kwargs),
-                contents=user_prompt,
+                contents=_gemini_contents(user_prompt, images),
             )
         except genai_errors.APIError as e:
             raise ProviderError(
@@ -342,6 +451,17 @@ def _gemini_schema(schema: dict[str, Any]) -> dict[str, Any]:
         return value
 
     return cast(dict[str, Any], strip_unsupported(schema))
+
+
+def _gemini_contents(user_prompt: str, images: tuple[ImageInput, ...]) -> Any:
+    """Build Gemini contents while preserving the text-only fast path."""
+    if not images:
+        return user_prompt
+    parts: list[Any] = [
+        types.Part.from_bytes(data=image.data, mime_type=image.media_type) for image in images
+    ]
+    parts.append(user_prompt)
+    return parts
 
 
 def _gemini_token_counts(response: Any) -> tuple[int, int, int]:
